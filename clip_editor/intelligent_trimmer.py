@@ -44,6 +44,11 @@ class IntelligentTrimmer:
         self.safety_settings = get_safety_settings()
         self.max_clip_duration = 55.0
         self.min_clip_duration = 12.0
+        # Stash of the last successful parse so callers (the metadata
+        # writer in particular) can read the punch_point_time and
+        # description without us having to widen the analyze_for_trim
+        # return signature.
+        self.last_parsed_data: Optional[dict] = None
         self.log_func(
             f"✂️  Intelligent trimmer initialized: {MODEL_PRO} "
             f"(thinking={THINKING_TRIM})"
@@ -389,6 +394,9 @@ Based on the video and dialogue above, produce that JSON now.
                 self.log_func("⚠️  No JSON found in response")
                 return []
             data = json.loads(json_match.group(0))
+            # Stash for the metadata writer — gives the strategist access to
+            # punch_point_time + setup_rationale without changing the return type.
+            self.last_parsed_data = data
 
             punch = data.get("punch_point_time")
             punch_desc = data.get("punch_point_description", "")

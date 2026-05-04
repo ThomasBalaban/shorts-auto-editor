@@ -122,22 +122,78 @@ def _processing_worker() -> None:
         _log(f"{'='*40}")
 
         try:
-            final_path, _title, meta = VideoProcessor.process_single_video(
-                input_file=entry["input_path"],
-                output_file=entry["output_path"],
-                animation_type=_settings["animation_type"],
-                sync_offset=_settings["sync_offset"],
-                detailed_logs=True,
-                log_func=_log,
-                enable_trimming=_settings["enable_trimming"],
+            env_flag = os.environ.get(
+                "SHORTS_STRATEGIST_ITERATION_LOOP", ""
+            ).strip().lower()
+            iteration_loop_enabled = env_flag in ("1", "true", "yes", "on")
+            _log(
+                f"   iteration loop: "
+                f"{'ENABLED' if iteration_loop_enabled else 'disabled'} "
+                f"(env SHORTS_STRATEGIST_ITERATION_LOOP={env_flag!r})"
             )
-            with _lock:
-                _files[idx]["output_path"] = (
-                    final_path or entry["output_path"])
-                _files[idx]["status"] = "done"
-                _files[idx]["title"] = (meta or {}).get("title", "") or ""
-            if meta:
-                batch_metadata.append(meta)
+
+            if iteration_loop_enabled:
+                # Strategist-driven loop. Each video gets its own metadata
+                # file (overwritten across iterations) so the strategist's
+                # edit-review task can score it independently. The
+                # orchestrator handles per-iteration output paths and
+                # picks the final ship version.
+                from core.iteration_loop import IterationOrchestrator
+                project_root = os.path.dirname(os.path.abspath(__file__))
+                shorts_data_dir = os.path.join(project_root, "shorts_data")
+                os.makedirs(shorts_data_dir, exist_ok=True)
+
+                # Pick the next available metadata filename. Mirrors the
+                # logic in _save_batch_metadata.
+                import re
+                max_index = 0
+                for fname in os.listdir(shorts_data_dir):
+                    m = re.match(r"shorts_metadata_(\d+)\.json", fname)
+                    if m:
+                        max_index = max(max_index, int(m.group(1)))
+                per_video_metadata_path = os.path.join(
+                    shorts_data_dir, f"shorts_metadata_{max_index + 1}.json")
+
+                out_dir, out_name = os.path.split(entry["output_path"])
+                out_stem, out_ext = os.path.splitext(out_name)
+                output_template = os.path.join(
+                    out_dir, f"{out_stem}-v{{iter}}{out_ext}")
+
+                orch = IterationOrchestrator(
+                    max_iterations=3, log_func=_log)
+                final_path, meta = orch.run(
+                    input_file=entry["input_path"],
+                    output_file_template=output_template,
+                    metadata_path=per_video_metadata_path,
+                    animation_type=_settings["animation_type"],
+                    sync_offset=_settings["sync_offset"],
+                    detailed_logs=True,
+                    final_output_path=entry["output_path"],
+                )
+                # Iteration-loop path writes its own per-video metadata file;
+                # do NOT add to batch_metadata so we don't double-write.
+                with _lock:
+                    _files[idx]["output_path"] = (
+                        final_path or entry["output_path"])
+                    _files[idx]["status"] = "done"
+                    _files[idx]["title"] = (meta or {}).get("title", "") or ""
+            else:
+                final_path, _title, meta = VideoProcessor.process_single_video(
+                    input_file=entry["input_path"],
+                    output_file=entry["output_path"],
+                    animation_type=_settings["animation_type"],
+                    sync_offset=_settings["sync_offset"],
+                    detailed_logs=True,
+                    log_func=_log,
+                    enable_trimming=_settings["enable_trimming"],
+                )
+                with _lock:
+                    _files[idx]["output_path"] = (
+                        final_path or entry["output_path"])
+                    _files[idx]["status"] = "done"
+                    _files[idx]["title"] = (meta or {}).get("title", "") or ""
+                if meta:
+                    batch_metadata.append(meta)
             _log(
                 f"✅ Done: "
                 f"{os.path.basename(_files[idx]['output_path'])}"

@@ -303,21 +303,80 @@ class DualSubtitleApp:
                 )
 
                 try:
-                    final_path, _, single_metadata = (
-                        VideoProcessor.process_single_video(
+                    env_flag = os.environ.get(
+                        "SHORTS_STRATEGIST_ITERATION_LOOP", ""
+                    ).strip().lower()
+                    iteration_loop_enabled = (
+                        env_flag in ("1", "true", "yes", "on")
+                        or (
+                            getattr(self, "iteration_loop_var", None)
+                            and self.iteration_loop_var.get()
+                        )
+                    )
+                    self.log(
+                        f"   iteration loop: "
+                        f"{'ENABLED' if iteration_loop_enabled else 'disabled'} "
+                        f"(env SHORTS_STRATEGIST_ITERATION_LOOP={env_flag!r})"
+                    )
+                    if iteration_loop_enabled:
+                        # Strategist-driven iteration loop. Each video gets
+                        # its own metadata file (overwritten across
+                        # iterations) so the strategist's edit-review task
+                        # can score each one independently.
+                        from core.iteration_loop import IterationOrchestrator
+                        project_root = os.path.dirname(
+                            os.path.abspath(__file__))
+                        shorts_data_dir = os.path.join(
+                            project_root, "shorts_data")
+                        os.makedirs(shorts_data_dir, exist_ok=True)
+                        # Pick the next available index for this video's
+                        # metadata file. Same logic as the batch path below.
+                        max_index = 0
+                        for fname in os.listdir(shorts_data_dir):
+                            m = re.match(r"shorts_metadata_(\d+)\.json", fname)
+                            if m:
+                                max_index = max(max_index, int(m.group(1)))
+                        per_video_index = max_index + 1 + i
+                        per_video_metadata_path = os.path.join(
+                            shorts_data_dir,
+                            f"shorts_metadata_{per_video_index}.json",
+                        )
+                        # Per-iteration output filename template.
+                        out_dir, out_name = os.path.split(output_file)
+                        out_stem, out_ext = os.path.splitext(out_name)
+                        output_template = os.path.join(
+                            out_dir, f"{out_stem}-v{{iter}}{out_ext}")
+
+                        orch = IterationOrchestrator(
+                            max_iterations=3,
+                            log_func=self.log,
+                        )
+                        final_path, single_metadata = orch.run(
                             input_file=input_file,
-                            output_file=output_file,
+                            output_file_template=output_template,
+                            metadata_path=per_video_metadata_path,
                             animation_type=animation_type,
                             sync_offset=sync_offset,
                             detailed_logs=detailed_logs,
-                            log_func=self.log,
+                            final_output_path=output_file,
                         )
-                    )
+                        # Iteration-loop path writes its own per-video metadata
+                        # file; do not double-write via the batch list.
+                    else:
+                        final_path, _, single_metadata = (
+                            VideoProcessor.process_single_video(
+                                input_file=input_file,
+                                output_file=output_file,
+                                animation_type=animation_type,
+                                sync_offset=sync_offset,
+                                detailed_logs=detailed_logs,
+                                log_func=self.log,
+                            )
+                        )
+                        if single_metadata:
+                            batch_metadata_list.append(single_metadata)
 
                     self.output_files[i] = final_path
-
-                    if single_metadata:
-                        batch_metadata_list.append(single_metadata)
 
                     input_name = os.path.basename(input_file)
                     output_name = os.path.basename(final_path)
