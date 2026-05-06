@@ -383,7 +383,7 @@ class VideoProcessor:
                     "original_duration": video_duration,
                     "final_duration": final_duration_value,
                     # Iteration tracking for the pre-publish edit-review loop.
-                    # SimpleAutoSubs owns these counters and enforces the cap;
+                    # shorts-auto-editor owns these counters and enforces the cap;
                     # shorts_strategist scores each iteration and recommends
                     # re-edits up to max_iterations times.
                     "iteration": 1,

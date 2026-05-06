@@ -1,7 +1,7 @@
 """
 Pre-publish iteration loop.
 
-Closes the feedback loop with shorts_strategist: after each cut SimpleAutoSubs
+Closes the feedback loop with shorts_strategist: after each cut shorts-auto-editor
 publishes editorial_decisions in metadata; the strategist reviews and either
 writes edit directives or signals which iteration to ship; this orchestrator
 applies the directives to a re-render and stops when the strategist says ship
@@ -9,7 +9,7 @@ applies the directives to a re-render and stops when the strategist says ship
 
 Wire format documented in shorts_strategist/gameplan.md ("Pre-publish
 edit-review feedback loop"). All paths assume the canonical sibling layout —
-shorts_strategist as a sibling directory to SimpleAutoSubs — but the
+shorts_strategist as a sibling directory to shorts-auto-editor — but the
 directive directory is overridable via SHORTS_STRATEGIST_EDITS_DIR.
 """
 from __future__ import annotations
@@ -38,7 +38,7 @@ DEFAULT_STRATEGIST_BASE_URL = "http://localhost:9022"
 
 def _default_edits_dir() -> str:
     """Resolve the strategist's edits/ directory under the sibling layout."""
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # SimpleAutoSubs/
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # shorts-auto-editor/
     parent = os.path.dirname(here)
     return os.path.join(parent, "shorts_strategist", "output", "recommendations", "edits")
 
@@ -70,7 +70,7 @@ def force_strategist_task(
     url = f"{_strategist_base_url()}/thinker/force"
     body = json.dumps({"task_type": task_type, "key": key}).encode("utf-8")
     try:
-        # urllib avoids a hard `requests` dependency on the simpleautosubs side.
+        # urllib avoids a hard `requests` dependency on the shorts-auto-editor side.
         from urllib.request import Request, urlopen
         req = Request(url, data=body, method="POST",
                       headers={"Content-Type": "application/json"})

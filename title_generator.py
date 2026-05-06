@@ -1,5 +1,5 @@
 """
-Title generator for SimpleAutoSubs.
+Title generator for shorts-auto-editor.
 
 Generates a single YouTube metadata title for a finished short, primed by
 the channel's analyzer corpus (synthesis + per-video analysis). The output

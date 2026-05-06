@@ -215,10 +215,7 @@ class IntelligentTrimmer:
         """Upload via Files API, poll to ACTIVE, reference by URI."""
         video_file = None
         try:
-            video_file = self.client.files.upload(
-                file=video_path,
-                config={"mime_type": mime_type},
-            )
+            video_file = self._upload_with_retry(video_path, mime_type)
 
             # Wait for ACTIVE — "Cannot fetch content" error == not ready yet.
             poll_start = time.time()
@@ -272,6 +269,52 @@ class IntelligentTrimmer:
                     self.client.files.delete(name=video_file.name)
                 except Exception:
                     pass
+
+    def _upload_with_retry(self, video_path: str, mime_type: str):
+        """
+        files.upload retried on transient network failures.
+
+        The genai SDK wraps requests in tenacity but its default retry policy
+        does not include httpx.ConnectTimeout / ReadTimeout / ConnectError —
+        which are exactly the failure modes seen on flaky uplinks for large
+        videos. We retry with exponential backoff up to 4 attempts.
+        """
+        import httpx
+        transient = (
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.WriteTimeout,
+            httpx.PoolTimeout,
+            httpx.ConnectError,
+            httpx.RemoteProtocolError,
+            ConnectionError,
+            TimeoutError,
+        )
+        attempts = 4
+        delay = 5
+        last_exc: Optional[BaseException] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                if attempt > 1:
+                    self.log_func(
+                        f"   ↻ Upload retry {attempt}/{attempts} …"
+                    )
+                return self.client.files.upload(
+                    file=video_path,
+                    config={"mime_type": mime_type},
+                )
+            except transient as e:
+                last_exc = e
+                self.log_func(
+                    f"   ⚠️  Upload attempt {attempt}/{attempts} failed: "
+                    f"{type(e).__name__}: {e}"
+                )
+                if attempt == attempts:
+                    break
+                self.log_func(f"   sleeping {delay}s before retry …")
+                time.sleep(delay)
+                delay = min(delay * 2, 60)
+        raise last_exc if last_exc else RuntimeError("upload failed")
 
     @staticmethod
     def _mime_type_for(path: str) -> str:

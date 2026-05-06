@@ -1,5 +1,5 @@
 """
-SimpleAutoSubs Headless API Server
+shorts-auto-editor Headless API Server
 REST API for the Hub to control video processing without the GUI.
 Port: 9020
 """
@@ -32,11 +32,13 @@ _settings: Dict[str, Any] = {
     "output_dir": os.path.join(os.path.expanduser("~"), "Desktop"),
     "enable_trimming": True,
 }
-_logs: deque = deque(maxlen=500)
+_logs: deque = deque(maxlen=50000)
 _processing = False
 _stop_requested = False
 _current_index = -1
 _lock = threading.Lock()
+_session_log_path: str = ""
+_session_log_lock = threading.Lock()
 
 
 def _load_settings() -> None:
@@ -72,6 +74,13 @@ def _log(msg: str) -> None:
     line = f"[{time.strftime('%H:%M:%S')}] {msg}"
     _logs.append(line)
     print(line, flush=True)
+    path = _session_log_path
+    if path:
+        try:
+            with _session_log_lock, open(path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception as e:
+            print(f"[session-log] write failed: {e}", flush=True)
 
 
 def _unique_output_path(input_path: str, output_dir: str) -> str:
@@ -86,7 +95,7 @@ def _unique_output_path(input_path: str, output_dir: str) -> str:
 
 
 def _processing_worker() -> None:
-    global _processing, _stop_requested, _current_index
+    global _processing, _stop_requested, _current_index, _session_log_path
 
     try:
         from core.video_processor import VideoProcessor
@@ -100,7 +109,37 @@ def _processing_worker() -> None:
     queued_indices = [
         i for i, f in enumerate(_files) if f["status"] == "queued"
     ]
+
+    # Open a per-batch session .txt log so /session-logs/list picks it up,
+    # mirroring main.py. Without this, only the in-memory ring buffer
+    # captured run output, so logs vanished on restart and got truncated
+    # after maxlen lines.
+    output_dir = _settings.get("output_dir") or ""
+    if output_dir:
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            timestamp = time.strftime("%Y-%m-%d_%H-%M")
+            path = os.path.join(output_dir, f"{timestamp}.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f"--- BATCH PROCESSING STARTED: {timestamp} ---\n")
+                f.write(f"Target Directory: {output_dir}\n")
+                f.write(f"Files Queued: {len(queued_indices)}\n")
+                f.write("Files to be processed:\n")
+                for n, idx in enumerate(queued_indices, 1):
+                    entry = _files[idx]
+                    f.write(
+                        f"  {n}. {os.path.basename(entry['input_path'])} -> "
+                        f"{os.path.basename(entry['output_path'])}\n"
+                    )
+                f.write("=" * 60 + "\n\n")
+            _session_log_path = path
+        except Exception as e:
+            print(f"[session-log] could not create log file: {e}", flush=True)
+            _session_log_path = ""
+
     _log(f"=== Batch started: {len(queued_indices)} queued file(s) ===")
+    if _session_log_path:
+        _log(f"📄 Session log: {_session_log_path}")
 
     batch_metadata: List[Dict[str, Any]] = []
 
@@ -221,6 +260,7 @@ def _processing_worker() -> None:
         _processing = False
         _current_index = -1
     _log("=== Batch complete ===")
+    _session_log_path = ""
 
 
 def _save_batch_metadata(batch_metadata: List[Dict[str, Any]]) -> None:
@@ -260,12 +300,12 @@ class FilesPayload(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _log(f"✅ SimpleAutoSubs API ready on :{PORT}")
+    _log(f"✅ shorts-auto-editor API ready on :{PORT}")
     yield
-    _log("SimpleAutoSubs API stopping.")
+    _log("shorts-auto-editor API stopping.")
 
 
-app = FastAPI(title="SimpleAutoSubs API", lifespan=lifespan)
+app = FastAPI(title="shorts-auto-editor API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

@@ -1,6 +1,6 @@
 # ui/ui_components.py - UPDATED
 """
-UI components and setup for the SimpleAutoSubs application.
+UI components and setup for the shorts-auto-editor application.
 Simplified for automatic dual-track transcription and onomatopoeia.
 """
 

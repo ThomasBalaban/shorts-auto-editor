@@ -22,7 +22,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 class DualSubtitleApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("SimpleAutoSubs — Multimodal Onomatopoeia Subtitler")
+        self.root.title("shorts-auto-editor — Multimodal Onomatopoeia Subtitler")
         self.message_queue = queue.Queue()
         self.processing_active = False
         self.current_process_index = -1

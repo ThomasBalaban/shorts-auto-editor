@@ -170,7 +170,25 @@ def _openai_transcribe(audio_path: str, language: str,
         return transcriptions
 
     except Exception as e:
-        log_func(f"⚠️  OpenAI Whisper error: {e}")
+        # Surface as much detail as possible — the OpenAI SDK hides useful info
+        # in attributes like .status_code, .response, .body, .code, .message.
+        log_func(f"⚠️  OpenAI Whisper error: {type(e).__name__}: {e}")
+        for attr in ("status_code", "code", "message", "type", "param"):
+            val = getattr(e, attr, None)
+            if val is not None:
+                log_func(f"     .{attr} = {val!r}")
+        body = getattr(e, "body", None)
+        if body is not None:
+            log_func(f"     .body = {body!r}")
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            try:
+                log_func(f"     .response.status_code = {resp.status_code}")
+                log_func(f"     .response.text = {resp.text[:1000]!r}")
+            except Exception:
+                pass
+        import traceback
+        log_func(traceback.format_exc())
         return []
     finally:
         if temp_mp3_created and os.path.exists(mp3_path):

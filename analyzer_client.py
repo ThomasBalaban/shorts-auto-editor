@@ -3,7 +3,7 @@ Thin client for the shorts_analyzer API (default :9021).
 
 Phase 0 of the integration laid out in gameplan.md. Every method degrades
 gracefully — if the analyzer is unreachable, callers get None / [] / False
-and a single warning log line. The SimpleAutoSubs pipeline must continue
+and a single warning log line. The shorts-auto-editor pipeline must continue
 to work without it.
 """
 import json
@@ -20,7 +20,7 @@ DEFAULT_BASE_URL = os.environ.get(
 HEALTH_TIMEOUT = 2.0
 READ_TIMEOUT = 10.0
 
-# Only channel SimpleAutoSubs ever cuts for. Hardcoded by design — if this
+# Only channel shorts-auto-editor ever cuts for. Hardcoded by design — if this
 # ever needs to change, edit it here, not in settings.
 CHANNEL_HANDLE = "PeepingOtter"
 

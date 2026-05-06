@@ -1,5 +1,5 @@
 
-# SimpleAutoSubs
+# shorts-auto-editor
 
 it looks for audio track 2/3 (mic then desktop) and transcribes them. styles are easy to change in the subtitles editor
 

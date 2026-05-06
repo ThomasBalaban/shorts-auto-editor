@@ -1,23 +1,23 @@
-# Gameplan — Integrating shorts_analyzer into SimpleAutoSubs
+# Gameplan — Integrating shorts_analyzer into shorts-auto-editor
 
 ## Context
 
-This project (SimpleAutoSubs) cuts down raw screen recordings into finished
+This project (shorts-auto-editor) cuts down raw screen recordings into finished
 shorts. The sibling project `shorts_analyzer` (port 9021) studies *published*
 YouTube shorts to figure out what works on a per-channel basis. We want to
-feed that "what works" signal back into SimpleAutoSubs so the cuts come out
+feed that "what works" signal back into shorts-auto-editor so the cuts come out
 better and ship with titles that match the channel's winning patterns.
 
 Most of the time, both apps run inside `youtube_hub` (which already supervises
 both api_servers — see `youtube_hub/service_defs.py`). The hub orchestrates;
-SimpleAutoSubs is reached at `http://localhost:9020`, the analyzer at
+shorts-auto-editor is reached at `http://localhost:9020`, the analyzer at
 `http://localhost:9021`. The integration should assume the hub is running both
-services, but SimpleAutoSubs must still work standalone if 9021 is down.
+services, but shorts-auto-editor must still work standalone if 9021 is down.
 
 ## The fundamental mismatch
 
 - shorts_analyzer is keyed on **published `video_id`s**.
-- SimpleAutoSubs operates on **raw recordings** that have no `video_id` yet.
+- shorts-auto-editor operates on **raw recordings** that have no `video_id` yet.
 
 So the integration is *not* "look up this clip" — it's **"pull channel-level
 guidance and apply it as priors at cut time."** The link between a raw
@@ -28,7 +28,7 @@ the feedback loop (Phase 4 below) interesting.
 
 ## Phase 0 — Bridge first (do this before anything else)
 
-The point of Phase 0 is to make SimpleAutoSubs *able to talk to* the analyzer
+The point of Phase 0 is to make shorts-auto-editor *able to talk to* the analyzer
 at all, with no behavior change yet. Everything later depends on this working
 cleanly with the hub up.
 
@@ -50,11 +50,11 @@ the caller's pipeline.
 ### 0.2 Channel resolution
 
 The analyzer's output files are keyed by channel handle (e.g.
-`PeepingOtter.json`). SimpleAutoSubs needs to know *which* channel a given
+`PeepingOtter.json`). shorts-auto-editor needs to know *which* channel a given
 batch belongs to. Two ways to wire it:
 
 1. **Hub-driven (preferred):** the hub already knows the active channel from
-   `hub_settings.json`. Add a `channel_handle` field to the SimpleAutoSubs
+   `hub_settings.json`. Add a `channel_handle` field to the shorts-auto-editor
    `/process` request body in `api_server.py`, pass it through to
    `VideoProcessor.process_single_video`.
 2. **Standalone fallback:** add a `channel_handle` field to the GUI
@@ -68,14 +68,14 @@ pipeline. **No analyzer dependency is ever required for cuts to succeed.**
 
 The analyzer's synthesis/tailwind data changes slowly (operator-triggered
 reruns only — see `shorts_analyzer/API.md`). Cache reads in
-`~/.simpleautosubs/cache/` keyed by `{channel_handle}.{filetype}.json` with
+`~/.shorts-auto-editor/cache/` keyed by `{channel_handle}.{filetype}.json` with
 the file's `modified` timestamp from `GET /results`. This keeps batch
 processing fast and survives the analyzer being briefly down.
 
 ### 0.4 Hub plumbing
 
 Update `youtube_hub/subtitler_routes.py` (or wherever the hub posts to 9020)
-to forward `channel_handle` from `hub_settings.json` into the SimpleAutoSubs
+to forward `channel_handle` from `hub_settings.json` into the shorts-auto-editor
 `/process` call. Add a hub setting if one doesn't already exist.
 
 **Done when:** from inside the hub, hitting "process" on a video logs
@@ -93,7 +93,7 @@ video pixels.** Subtitles and onomatopoeia stay as-is.
 
 The publisher (`youtube_shorts_publisher`) is explicitly out of scope for
 this phase. We treat `shorts_data/shorts_metadata_N.json` as the contract
-surface — when SimpleAutoSubs writes the title into that file, Phase 1 is
+surface — when shorts-auto-editor writes the title into that file, Phase 1 is
 done. Hooking it up to the publisher is a later, separate piece of work.
 
 ### 1.1 Title generator
@@ -182,7 +182,7 @@ Text-only Gemini call, reuses the channel's tailwind/synthesis context as
 system prompt. Cheap. Synchronous (no job slot needed — different from the
 expensive `/rerun/*` endpoints).
 
-### 2.2 SimpleAutoSubs consumption
+### 2.2 shorts-auto-editor consumption
 
 In `clip_editor/intelligent_trimmer.py`, after generating candidate trim
 points, call `analyzer_client.score_hook(...)`. Use the score as one input
@@ -198,7 +198,7 @@ trimmer constraints respected).
 
 ## Phase 3 — Close the loop after publish
 
-This is what makes the system *learn*. SimpleAutoSubs's outputs eventually
+This is what makes the system *learn*. shorts-auto-editor's outputs eventually
 become the analyzer's training corpus.
 
 ### 3.1 Stamp video_id back
@@ -206,7 +206,7 @@ become the analyzer's training corpus.
 After `youtube_shorts_publisher` (sibling project) uploads a cut, write the
 resulting `video_id` into the corresponding entry of
 `shorts_data/shorts_metadata_N.json`. Likely lives in the publisher or in
-hub pipeline glue, not here — but SimpleAutoSubs needs to make the metadata
+hub pipeline glue, not here — but shorts-auto-editor needs to make the metadata
 record findable (stable filename + a unique `cut_id` field would help).
 
 ### 3.2 Targeted ingest endpoint
@@ -242,7 +242,7 @@ day.
   decisions from the raw video; the analyzer reasons about published
   performance. They're complementary, not substitutes. Phase 2 is a
   re-ranking layer, not a replacement.
-- **Auto-running expensive analyzer reruns from SimpleAutoSubs.** All
+- **Auto-running expensive analyzer reruns from shorts-auto-editor.** All
   `/rerun/analysis` and similar are operator-triggered (per the analyzer's
   API contract). Don't let cut-time code start them.
 
