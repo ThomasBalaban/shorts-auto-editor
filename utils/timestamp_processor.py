@@ -129,6 +129,51 @@ def format_timestamp_line(start_time, end_time, text):
     return f"{start_time:.2f}-{end_time:.2f}: {text}"
 
 
+def shift_transcriptions_to_output_time(
+    transcriptions: List[str],
+    kept_segments: List[Tuple[float, float]],
+) -> List[str]:
+    """Map source-time transcription lines into trimmed-output time.
+
+    Used after a trim is applied: each kept segment [s_i, e_i] in source-time
+    becomes a contiguous range starting at sum_{j<i}(e_j-s_j) in output-time.
+    A word at source time T inside segment i lands at:
+        T_out = (T - s_i) + cumulative_offset(i)
+
+    Lines whose start or end falls outside all kept segments are dropped.
+    Lines spanning a boundary are clipped to the segment they start in
+    (rare for word-level timestamps; safer than dropping mid-utterance).
+    """
+    if not transcriptions or not kept_segments:
+        return []
+
+    # Precompute cumulative offsets per segment.
+    seg_with_offset: List[Tuple[float, float, float]] = []
+    cum = 0.0
+    for s, e in kept_segments:
+        seg_with_offset.append((float(s), float(e), cum))
+        cum += float(e) - float(s)
+
+    out: List[str] = []
+    for line in transcriptions:
+        parsed = parse_timestamp_line(line)
+        if parsed is None:
+            continue
+        start, end, text = parsed
+        # Find segment containing the start time.
+        for s, e, off in seg_with_offset:
+            if s <= start < e:
+                clipped_end = min(end, e)
+                if clipped_end <= start:
+                    break
+                new_start = (start - s) + off
+                new_end = (clipped_end - s) + off
+                out.append(format_timestamp_line(new_start, new_end, text))
+                break
+        # Lines starting outside any kept segment are dropped.
+    return out
+
+
 def extend_segments_for_dialogue(
     segments_to_keep: List[Tuple[float, float]],
     raw_mic_transcriptions: List[str],
