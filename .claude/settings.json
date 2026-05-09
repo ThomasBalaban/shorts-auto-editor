@@ -16,7 +16,9 @@
       "Bash(python3)",
       "Bash(python3 -c \"import openai; print\\('openai version:', openai.__version__\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('api_server.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(python3 -c \"import ast; ast.parse\\(open\\('clip_editor/intelligent_trimmer.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('clip_editor/intelligent_trimmer.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('core/iteration_loop.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import json; print\\(json.load\\(open\\('/Users/thomasbalaban/Downloads/projects/youtube-automator/youtube_hub/hub_settings.json'\\)\\).get\\('output_dir',''\\)\\)\")"
     ],
     "additionalDirectories": [
       "/Users/thomasbalaban/Downloads/projects/shorts_strategist",

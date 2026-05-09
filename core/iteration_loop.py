@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -647,19 +648,74 @@ class IterationOrchestrator:
                 )
 
         # 2. Delete every other iteration's file.
+        # Two passes: (a) the in-memory states we know about, (b) a glob of
+        # the output dir for any sibling -v<N> files that match the iteration
+        # template. The glob pass catches the case where state.output_path
+        # drifted from what's actually on disk (e.g. an earlier failed run
+        # left v1 around but the current run's `states` only knows about
+        # v1/v2 of the new attempt). Without it, those orphans persist.
+        import glob as _glob
         deleted: List[str] = []
+        already_handled: set = set()
+
+        # Pass (a): tracked iterations.
         for it_num, state in states.items():
             if state.output_path == chosen_path:
+                already_handled.add(os.path.abspath(state.output_path))
                 continue
+            already_handled.add(os.path.abspath(state.output_path))
             if not os.path.exists(state.output_path):
                 continue
             try:
                 os.remove(state.output_path)
-                deleted.append(f"v{it_num}")
+                deleted.append(f"v{it_num} ({os.path.basename(state.output_path)})")
             except OSError as e:
                 self.log_func(f"   ⚠ Could not delete v{it_num}: {e}")
+
+        # Pass (b): glob the iteration sibling pattern. Reconstruct the
+        # template from any tracked state (or from chosen_path if it still
+        # ends in -v<N>). Pattern: <stem>-v[0-9]*<ext>.
+        sample_path: Optional[str] = None
+        for state in states.values():
+            if "-v" in os.path.basename(state.output_path):
+                sample_path = state.output_path
+                break
+        if sample_path is None and "-v" in os.path.basename(chosen_path):
+            sample_path = chosen_path
+        if sample_path:
+            sample_dir = os.path.dirname(sample_path)
+            sample_name = os.path.basename(sample_path)
+            sample_stem, sample_ext = os.path.splitext(sample_name)
+            # Strip the -v<digits> suffix to recover the canonical stem.
+            m = re.match(r"^(.*)-v\d+$", sample_stem)
+            if m:
+                base_stem = m.group(1)
+                pattern = os.path.join(
+                    sample_dir, f"{base_stem}-v[0-9]*{sample_ext}"
+                )
+                chosen_abs = os.path.abspath(chosen_path)
+                for orphan in _glob.glob(pattern):
+                    orphan_abs = os.path.abspath(orphan)
+                    if orphan_abs == chosen_abs:
+                        continue
+                    if orphan_abs in already_handled:
+                        continue
+                    try:
+                        os.remove(orphan)
+                        deleted.append(f"orphan ({os.path.basename(orphan)})")
+                    except OSError as e:
+                        self.log_func(
+                            f"   ⚠ Could not delete orphan "
+                            f"{os.path.basename(orphan)}: {e}"
+                        )
+
         if deleted:
             self.log_func(f"   🗑  Cleaned up: {', '.join(deleted)}")
+        else:
+            self.log_func(
+                f"   🗑  No iteration leftovers to clean "
+                f"(shipped: {os.path.basename(chosen_path)})"
+            )
 
         # 3. Patch metadata to point at the canonical file + record ship info.
         file_info = dict(final_meta.get("file_info") or {})
