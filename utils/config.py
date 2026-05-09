@@ -1,22 +1,25 @@
 # utils/config.py
-import json
+"""API-key loader. Reads from the centralized youtube_hub/config/secrets.json."""
+
 import os
+import sys
 
-_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_HUB_CONFIG = os.path.abspath(
+    os.path.join(_HERE, "..", "..", "youtube_hub", "config"))
+if _HUB_CONFIG not in sys.path:
+    sys.path.insert(0, _HUB_CONFIG)
 
-
-def _load_config() -> dict:
-    if not os.path.exists(_CONFIG_PATH):
-        raise FileNotFoundError(
-            "config.json not found. Add your API keys there.")
-    with open(_CONFIG_PATH, "r") as f:
-        return json.load(f)
+from shared_secrets import (  # noqa: E402
+    get_gemini_api_key as _shared_gemini,
+    get_openai_api_key as _shared_openai,
+)
 
 
 def get_gemini_api_key() -> str:
-    return _load_config().get("GEMINI_API_KEY", "")
+    return _shared_gemini()
 
 
 def get_openai_api_key() -> str:
     """Return the OpenAI API key used for Whisper transcription."""
-    return _load_config().get("OPENAI_API_KEY", "")
+    return _shared_openai()
