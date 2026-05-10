@@ -9,9 +9,12 @@ import time
 import subprocess
 import tempfile
 import numpy as np
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
-from utils.timestamp_processor import apply_duration_adjustments, fix_overlapping_timestamps
+from utils.timestamp_processor import (
+    apply_duration_adjustments,
+    fix_overlapping_timestamps,
+)
 from utils.hallucination_filter import filter_hallucinations
 
 # ── OpenAI client (primary) ──────────────────────────────────────────────────
@@ -36,6 +39,136 @@ try:
     _whisperx_available = True
 except ImportError:
     _whisperx_available = False
+
+
+# ── Forced alignment of OpenAI words via WhisperX ───────────────────────────
+
+# Module-level cache so we don't reload the Wav2Vec2 model for every track.
+# WhisperX's load_align_model downloads ~360 MB on first use and takes a
+# couple of seconds even from cache. Two tracks per video × N videos
+# would compound noticeably without this.
+_align_model_cache: dict = {}
+
+
+def _get_align_model(language_code: str, device: str, log_func):
+    key = (language_code, device)
+    if key in _align_model_cache:
+        return _align_model_cache[key]
+    from whisperx import load_align_model
+    log_func(
+        f"   📥 Loading whisperx alignment model "
+        f"(lang={language_code}, device={device}) …"
+    )
+    model_a, metadata = load_align_model(language_code=language_code, device=device)
+    _align_model_cache[key] = (model_a, metadata)
+    return model_a, metadata
+
+
+def _group_openai_words_into_segments(words, gap_threshold: float = 0.5):
+    """Group OpenAI words into phrase-level segments separated by silence.
+
+    WhisperX needs segment-level chunks of (start, end, text) to align;
+    one giant segment also works but smaller phrase-shaped chunks make
+    alignment more robust against acoustic-model failures on a single
+    word. ~0.5 s of silence is a natural phrase break.
+    """
+    if not words:
+        return []
+    segments = []
+    current = [words[0]]
+    for w in words[1:]:
+        prev = current[-1]
+        try:
+            gap = float(w.start) - float(prev.end)
+        except (TypeError, ValueError):
+            gap = 0.0
+        if gap > gap_threshold:
+            segments.append(_words_to_segment(current))
+            current = [w]
+        else:
+            current.append(w)
+    if current:
+        segments.append(_words_to_segment(current))
+    return segments
+
+
+def _words_to_segment(words):
+    return {
+        "start": float(words[0].start),
+        "end": float(words[-1].end),
+        "text": " ".join((w.word or "").strip() for w in words).strip(),
+    }
+
+
+def _whisperx_align_openai_words(
+    openai_words,
+    audio_path: str,
+    language_code: str,
+    device: str,
+    log_func,
+) -> Optional[List[dict]]:
+    """Run forced alignment over the OpenAI text against the WAV audio.
+
+    Returns a list of ``{"word", "start", "end"}`` dicts on success, or
+    None on any failure (whisperx not installed, alignment error,
+    no usable words returned). Callers must treat None as "use OpenAI's
+    raw timestamps."
+    """
+    if not _whisperx_available:
+        log_func(
+            "   ℹ️  whisperx not installed — keeping OpenAI raw word timestamps"
+        )
+        return None
+    if not openai_words:
+        return None
+    try:
+        from whisperx import align as wx_align
+        log_func(
+            f"   🎯 Forced-aligning {len(openai_words)} words via whisperx "
+            f"(device={device}) …"
+        )
+        model_a, metadata = _get_align_model(language_code, device, log_func)
+        segments = _group_openai_words_into_segments(openai_words)
+        result = wx_align(
+            segments, model_a, metadata, audio_path, device,
+            return_char_alignments=False,
+        )
+        aligned: List[dict] = []
+        for seg in result.get("segments", []):
+            for w in seg.get("words", []):
+                ws = w.get("start")
+                we = w.get("end")
+                if ws is None or we is None:
+                    continue
+                try:
+                    fs = float(ws)
+                    fe = float(we)
+                except (TypeError, ValueError):
+                    continue
+                if fe <= fs:
+                    continue
+                aligned.append({
+                    "word":  w.get("word", ""),
+                    "start": fs,
+                    "end":   fe,
+                })
+        if not aligned:
+            log_func(
+                "   ⚠ whisperx returned no usable word boundaries — "
+                "falling back to OpenAI timestamps"
+            )
+            return None
+        log_func(
+            f"   ✅ whisperx aligned {len(aligned)} words "
+            f"(grouped into {len(segments)} phrase segments)"
+        )
+        return aligned
+    except Exception as e:
+        log_func(
+            f"   ⚠ whisperx alignment failed: {type(e).__name__}: {e} — "
+            "using OpenAI timestamps"
+        )
+        return None
 
 
 def _get_openai_client(log_func=None):
@@ -124,10 +257,18 @@ def _to_mp3_for_api(wav_path: str, log_func) -> str:
 
 def _openai_transcribe(audio_path: str, language: str,
                        is_mic_track: bool, track_name: str,
-                       log_func) -> List[str]:
+                       log_func, device: str = "cpu") -> List[str]:
     """
     Call the OpenAI Whisper API and return word-level timestamp strings.
     Returns [] on any failure so the caller can fall back.
+
+    When ``device`` and the local ``whisperx`` package are available, the
+    OpenAI text is run through Wav2Vec2 forced alignment to derive
+    precise word boundaries from the actual audio. Whisper-1's word
+    timestamps come from cross-attention weights and are typically off
+    by ±100–300 ms; forced alignment is accurate to ~20–50 ms. Falls
+    back silently to OpenAI's raw timestamps if whisperx isn't present
+    or alignment fails.
     """
     client = _get_openai_client(log_func)
     if client is None:
@@ -158,14 +299,38 @@ def _openai_transcribe(audio_path: str, language: str,
 
         log_func(f"✅ OpenAI transcribed {len(words)} words for {track_name}")
 
+        # Re-derive word boundaries from the actual audio. Aligned words
+        # replace OpenAI's cross-attention-based timestamps for both the
+        # trim and subtitle paths. Returns None on any failure (whisperx
+        # missing, alignment error) — we then fall through to using the
+        # raw OpenAI timestamps as before.
+        aligned = _whisperx_align_openai_words(
+            openai_words=words,
+            audio_path=audio_path,  # original WAV (not the mp3 used for API)
+            language_code=lang_code,
+            device=device,
+            log_func=log_func,
+        )
+
         transcriptions = []
-        for w in words:
-            text = w.word.strip()
-            if not text:
-                continue
-            if is_mic_track:
-                text = text.upper()
-            transcriptions.append(f"{w.start:.2f}-{w.end:.2f}: {text}")
+        if aligned is not None:
+            for aw in aligned:
+                text = (aw.get("word") or "").strip()
+                if not text:
+                    continue
+                if is_mic_track:
+                    text = text.upper()
+                transcriptions.append(
+                    f"{aw['start']:.2f}-{aw['end']:.2f}: {text}"
+                )
+        else:
+            for w in words:
+                text = w.word.strip()
+                if not text:
+                    continue
+                if is_mic_track:
+                    text = text.upper()
+                transcriptions.append(f"{w.start:.2f}-{w.end:.2f}: {text}")
 
         return transcriptions
 
@@ -297,7 +462,9 @@ def transcribe_audio(
         else:
             log_func(f"🌐 Attempting OpenAI Whisper API for {track_name} …")
             transcriptions = _openai_transcribe(
-                audio_path, language, is_mic_track, track_name, log_func)
+                audio_path, language, is_mic_track, track_name, log_func,
+                device=device,
+            )
 
         # ── 2. Fall back to local model ───────────────────────────────────
         if not transcriptions:

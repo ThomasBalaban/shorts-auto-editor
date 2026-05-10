@@ -55,12 +55,38 @@ def detect_continuous_vocalization(
         return False, check_time
 
 
-def adjust_word_duration(start_time, end_time, min_duration=0.3, max_duration=1.5):
-    """Adjust word timestamps based on duration constraints."""
+# Subtitle word duration floor.
+#
+# Whisper word durations for short tokens like "the" / "a" / "of" are
+# commonly 80–150 ms; the prior 0.30 s floor stretched these to linger
+# ~150–220 ms past the actual speech, which read as "the subtitle hangs
+# after I'm done talking." 0.08 s ≈ 5 frames at 60 fps and is short
+# enough to feel snappy while still being rendered.
+MIN_SUBTITLE_WORD_DURATION_S = 0.08
+MAX_SUBTITLE_WORD_DURATION_S = 1.5
+
+
+def adjust_word_duration(
+    start_time,
+    end_time,
+    min_duration: float = MIN_SUBTITLE_WORD_DURATION_S,
+    max_duration: float = MAX_SUBTITLE_WORD_DURATION_S,
+):
+    """Adjust word timestamps based on duration constraints.
+
+    For OVER-long words (held vocalizations like "OKAYYYY"), the cap
+    preserves END and pushes START forward. This matters because for
+    these tokens Whisper's annotated start is often the moment audio
+    energy first appears, which can be hundreds of ms before the user
+    perceives the word beginning. Preserving END keeps the rendered
+    subtitle near the perceived peak of the vocalization.
+
+    For UNDER-short words, the floor preserves START and stretches END.
+    """
     current_duration = end_time - start_time
     if current_duration > max_duration:
         return end_time - max_duration, end_time
-    elif current_duration < min_duration:
+    if current_duration < min_duration:
         return start_time, start_time + min_duration
     return start_time, end_time
 
@@ -68,10 +94,10 @@ def adjust_word_duration(start_time, end_time, min_duration=0.3, max_duration=1.
 def apply_duration_adjustments(transcriptions, track_name="", log_func=None):
     """Apply duration adjustments to a list of transcriptions."""
     if not transcriptions or not log_func: return transcriptions
-    
+
     log_func(f"Applying duration adjustments for {track_name}...")
     adjusted_transcriptions = []
-    
+
     for line in transcriptions:
         try:
             time_part, text = line.split(':', 1)
@@ -80,7 +106,7 @@ def apply_duration_adjustments(transcriptions, track_name="", log_func=None):
             adjusted_transcriptions.append(f"{new_start:.2f}-{new_end:.2f}:{text}")
         except (ValueError, IndexError):
             adjusted_transcriptions.append(line)
-            
+
     return adjusted_transcriptions
 
 
