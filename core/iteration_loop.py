@@ -152,6 +152,7 @@ class PreBakedDecisions:
     onomatopoeia_events: List[Dict[str, Any]]
     decision_timeline: List[TimelineEvent]
     title_metadata: Optional[Dict[str, Any]] = None  # title + title_analysis + title_provenance
+    narrative_plan: Optional[Dict[str, Any]] = None   # planner output, possibly modified by strategist's replan_anchors
 
 
 # ─── deserialization helpers ─────────────────────────────────────────────────
@@ -190,6 +191,11 @@ def _timeline_from_decisions(decisions: Dict[str, Any]) -> List[TimelineEvent]:
             continue
     out.sort(key=lambda e: e.timestamp)
     return out
+
+
+def _narrative_plan_from_decisions(decisions: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    plan = decisions.get("narrative_plan")
+    return plan if isinstance(plan, dict) else None
 
 
 def _onomatopoeia_from_decisions(decisions: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -237,17 +243,26 @@ def apply_directives(
     trim_segments: List[Tuple[float, float]],
     decision_timeline: List[TimelineEvent],
     onomatopoeia_events: List[Dict[str, Any]],
+    narrative_plan: Optional[Dict[str, Any]] = None,
     log_func: Callable[[str], None] = print,
-) -> Tuple[List[Tuple[float, float]], List[TimelineEvent], List[Dict[str, Any]]]:
-    """Apply edit_directives to (trim, timeline, events) in-memory.
+) -> Tuple[
+    List[Tuple[float, float]],
+    List[TimelineEvent],
+    List[Dict[str, Any]],
+    Optional[Dict[str, Any]],
+]:
+    """Apply edit_directives to (trim, timeline, events, plan) in-memory.
 
     Each directive is best-effort: an unmatched timestamp on remove/replace is
     logged and skipped, not raised. The final timeline + events are sorted by
-    time.
+    time. ``narrative_plan`` is mutated by replan_anchors directives.
     """
     new_trim: List[Tuple[float, float]] = list(trim_segments or [])
     new_timeline: List[TimelineEvent] = list(decision_timeline or [])
     new_events: List[Dict[str, Any]] = list(onomatopoeia_events or [])
+    new_plan: Optional[Dict[str, Any]] = (
+        dict(narrative_plan) if isinstance(narrative_plan, dict) else None
+    )
 
     # ── retrim ─────────────────────────────────────────────────────────────
     retrim = (directives or {}).get("retrim") or {}
@@ -348,7 +363,120 @@ def apply_directives(
 
     new_events.sort(key=lambda e: e.get("precise_peak_time", e.get("start_time", 0.0)))
 
-    return new_trim, new_timeline, new_events
+    # ── replan_anchors ─────────────────────────────────────────────────────
+    # Strategist surgery on the narrative plan. Operates on
+    # narrative_plan["must_keep_moments"] and (for "set_hook_status") the
+    # hook fields. Each operation is best-effort.
+    replan = (directives or {}).get("replan_anchors") or {}
+    operations = replan.get("operations") or []
+    if operations and new_plan is not None:
+        moments = list(new_plan.get("must_keep_moments") or [])
+        hook = new_plan.get("hook")
+        for op in operations:
+            otype = op.get("type")
+            if otype == "add":
+                m = {
+                    "kind":      str(op.get("kind") or "other"),
+                    "start":     float(op.get("start", 0.0) or 0.0),
+                    "end":       float(op.get("end", 0.0) or 0.0),
+                    "rationale": str(op.get("rationale") or "")[:300],
+                }
+                if m["start"] < m["end"]:
+                    moments.append(m)
+                    log_func(
+                        f"   ＋ added must-keep '{m['kind']}' "
+                        f"@{m['start']:.1f}-{m['end']:.1f}s"
+                    )
+                else:
+                    log_func(f"   ⚠ skipped invalid add: {op}")
+            elif otype == "remove":
+                at = op.get("at_time")
+                if at is None:
+                    log_func(f"   ⚠ replan remove missing at_time: {op}")
+                    continue
+                before = len(moments)
+                moments = [
+                    m for m in moments
+                    if not (float(m["start"]) <= float(at) <= float(m["end"]))
+                ]
+                if len(moments) == before:
+                    log_func(
+                        f"   ⚠ no must-keep moment overlapping "
+                        f"{at}s for remove"
+                    )
+                else:
+                    log_func(
+                        f"   ✂ removed must-keep covering {at}s — "
+                        f"{(op.get('reason') or '')[:120]}"
+                    )
+            elif otype == "replace":
+                at = op.get("at_time")
+                if at is None:
+                    log_func(f"   ⚠ replan replace missing at_time: {op}")
+                    continue
+                replaced = False
+                for i, m in enumerate(moments):
+                    if float(m["start"]) <= float(at) <= float(m["end"]):
+                        moments[i] = {
+                            "kind":      str(op.get("kind", m["kind"])),
+                            "start":     float(op.get("start", m["start"])),
+                            "end":       float(op.get("end", m["end"])),
+                            "rationale": str(op.get("rationale", m["rationale"]))[:300],
+                        }
+                        replaced = True
+                        log_func(
+                            f"   ⇄ replaced must-keep at {at}s → "
+                            f"{moments[i]['kind']} "
+                            f"{moments[i]['start']:.1f}-"
+                            f"{moments[i]['end']:.1f}s"
+                        )
+                        break
+                if not replaced:
+                    log_func(
+                        f"   ⚠ no must-keep moment overlapping "
+                        f"{at}s for replace"
+                    )
+            elif otype == "set_hook":
+                hook = {
+                    "kind":      "hook",
+                    "start":     float(op.get("start", 0.0) or 0.0),
+                    "end":       float(op.get("end", 0.0) or 0.0),
+                    "rationale": str(op.get("rationale") or "")[:300],
+                }
+                if hook["start"] >= hook["end"]:
+                    hook = None
+                    log_func(f"   ⚠ skipped invalid set_hook: {op}")
+                else:
+                    new_plan["hook_status"] = "found"
+                    new_plan["hook_status_reason"] = str(
+                        op.get("reason") or "set by strategist"
+                    )[:300]
+                    # Mirror into must_keep_moments
+                    moments = [
+                        m for m in moments
+                        if not (m.get("kind") == "hook")
+                    ]
+                    moments.insert(0, dict(hook))
+                    log_func(
+                        f"   🪝 hook set by strategist: "
+                        f"{hook['start']:.1f}-{hook['end']:.1f}s"
+                    )
+            elif otype == "clear_hook":
+                hook = None
+                new_plan["hook_status"] = "absent"
+                new_plan["hook_status_reason"] = str(
+                    op.get("reason") or "cleared by strategist"
+                )[:300]
+                moments = [m for m in moments if m.get("kind") != "hook"]
+                log_func("   🪝 hook cleared by strategist")
+            else:
+                log_func(f"   ⚠ unknown replan_anchors operation: {op}")
+
+        moments.sort(key=lambda m: float(m["start"]))
+        new_plan["must_keep_moments"] = moments
+        new_plan["hook"] = hook
+
+    return new_trim, new_timeline, new_events, new_plan
 
 
 # ─── pre-baked builder ──────────────────────────────────────────────────────
@@ -366,12 +494,14 @@ def build_pre_baked_for_next_iteration(
     trim_segments = _trim_segments_from_decisions(decisions)
     timeline      = _timeline_from_decisions(decisions)
     events        = _onomatopoeia_from_decisions(decisions)
+    plan          = _narrative_plan_from_decisions(decisions)
 
-    trim_segments, timeline, events = apply_directives(
+    trim_segments, timeline, events, plan = apply_directives(
         directives or {},
         trim_segments=trim_segments,
         decision_timeline=timeline,
         onomatopoeia_events=events,
+        narrative_plan=plan,
         log_func=log_func,
     )
 
@@ -381,6 +511,7 @@ def build_pre_baked_for_next_iteration(
         decision_timeline=timeline,
         onomatopoeia_events=events,
         title_metadata=_title_metadata_from_iteration(prior_metadata),
+        narrative_plan=plan,
     )
 
 

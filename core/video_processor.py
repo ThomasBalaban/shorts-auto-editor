@@ -14,6 +14,7 @@ from ai_director.master_director import MasterDirector
 from ai_director.video_editor import VideoEditor
 from video_utils import get_video_duration
 from clip_editor.intelligent_trimmer import IntelligentTrimmer
+from clip_editor.narrative_planner import NarrativePlanner, is_planner_enabled
 from utils.timestamp_processor import (
     extend_segments_for_dialogue,
     shift_transcriptions_to_output_time,
@@ -58,6 +59,7 @@ class VideoProcessor:
         trim_segments = None
         extended_trim_segments: list = []
         last_trim_data: Optional[dict] = None
+        narrative_plan: Optional[dict] = None
         decision_timeline = None
         events = []
         video_metadata = None
@@ -147,6 +149,7 @@ class VideoProcessor:
                 last_trim_data    = pre_baked.last_trim_data
                 events            = list(pre_baked.onomatopoeia_events or [])
                 decision_timeline = list(pre_baked.decision_timeline or [])
+                narrative_plan    = pre_baked.narrative_plan
                 # The prior iteration already ran extend_segments_for_dialogue
                 # and any directive-driven retrim — replay verbatim.
                 extended_trim_segments = list(trim_segments)
@@ -155,7 +158,40 @@ class VideoProcessor:
                     f"{len(decision_timeline)} zoom events, "
                     f"{len(events)} onomatopoeia events"
                 )
+                if narrative_plan:
+                    log_func(
+                        f"   Carrying forward narrative plan with "
+                        f"{len(narrative_plan.get('must_keep_moments', []))} "
+                        "must-keep moments"
+                    )
             else:
+                # ── PHASE 1b: Narrative planning (pre-trim) ──────────────
+                # Best-effort: identifies hook/setup/payoff anchors that the
+                # trimmer must keep fully covered. Disabled via env var
+                # SHORTS_NARRATIVE_PLANNER=0; falls back to None on any
+                # failure. When narrative_plan is None the trimmer behaves
+                # exactly as before this feature was added.
+                narrative_plan = None
+                if enable_trimming and is_planner_enabled():
+                    log_func("\n--- PHASE 1b: Narrative Planning ---")
+                    try:
+                        narrative_plan = NarrativePlanner(
+                            log_func=log_func
+                        ).plan(
+                            video_path=input_file,
+                            video_duration=source_video_duration,
+                            mic_transcriptions=mic_transcriptions_raw,
+                            desktop_transcriptions=desktop_transcriptions_raw,
+                        )
+                    except Exception as e:
+                        log_func(f"⚠️ Narrative planner crashed: {e}")
+                        narrative_plan = None
+                    if narrative_plan is None:
+                        log_func(
+                            "   (proceeding without moments — trimmer "
+                            "will pick blind)"
+                        )
+
                 log_func("\n--- PHASE 2: Intelligent Trimming Analysis ---")
                 if enable_trimming:
                     trimmer = IntelligentTrimmer(log_func=log_func)
@@ -163,6 +199,7 @@ class VideoProcessor:
                         video_path=input_file,
                         mic_transcriptions=mic_transcriptions_raw,
                         desktop_transcriptions=desktop_transcriptions_raw,
+                        narrative_plan=narrative_plan,
                     )
                     if trim_segments:
                         total_kept = sum(e - s for s, e in trim_segments)
@@ -375,6 +412,12 @@ class VideoProcessor:
                 "trim_punch_point": (last_trim_data or {}).get("punch_point_time"),
                 "trim_punch_description": (last_trim_data or {}).get("punch_point_description"),
                 "trim_setup_rationale": (last_trim_data or {}).get("setup_rationale"),
+                # The narrative plan that drove this iteration's trim. Stays
+                # the same across iterations unless the strategist issues a
+                # replan_anchors directive. Strategist consumes this to
+                # score moment_coverage and decide whether anchors need
+                # adjustment for a future iteration.
+                "narrative_plan": narrative_plan,
                 "zoom_timeline": [
                     {
                         "time":       float(getattr(ev, "timestamp", 0.0)),

@@ -18,7 +18,15 @@
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('api_server.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('clip_editor/intelligent_trimmer.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('core/iteration_loop.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(python3 -c \"import json; print\\(json.load\\(open\\('/Users/thomasbalaban/Downloads/projects/youtube-automator/youtube_hub/hub_settings.json'\\)\\).get\\('output_dir',''\\)\\)\")"
+      "Bash(python3 -c \"import json; print\\(json.load\\(open\\('/Users/thomasbalaban/Downloads/projects/youtube-automator/youtube_hub/hub_settings.json'\\)\\).get\\('output_dir',''\\)\\)\")",
+      "Bash(xargs basename -a)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('clip_editor/intelligent_trimmer.py'\\).read\\(\\)\\); ast.parse\\(open\\('clip_editor/narrative_planner.py'\\).read\\(\\)\\); ast.parse\\(open\\('core/video_processor.py'\\).read\\(\\)\\); print\\('OK: all three files parse'\\)\")",
+      "Bash(xargs ls -lt)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('/Users/thomasbalaban/Downloads/projects/youtube-automator/shorts_strategist/strategist/tasks/pre_publish_edit_review.py'\\).read\\(\\)\\); ast.parse\\(open\\('/Users/thomasbalaban/Downloads/projects/youtube-automator/shorts-auto-editor/core/iteration_loop.py'\\).read\\(\\)\\); ast.parse\\(open\\('/Users/thomasbalaban/Downloads/projects/youtube-automator/shorts-auto-editor/core/video_processor.py'\\).read\\(\\)\\); ast.parse\\(open\\('/Users/thomasbalaban/Downloads/projects/youtube-automator/shorts-auto-editor/clip_editor/intelligent_trimmer.py'\\).read\\(\\)\\); ast.parse\\(open\\('/Users/thomasbalaban/Downloads/projects/youtube-automator/shorts-auto-editor/clip_editor/narrative_planner.py'\\).read\\(\\)\\); print\\('OK: all five files parse'\\)\")",
+      "Bash(grep -nE \"🧭|⚓|📖|🪝|🎯|⚓ Injecting|✓ Keep|🔧|✂️ |🥊|📐|CORRECTION|narrative|moment|hook|Phase 1b|Phase 2|punch|extension|🛡️|📍 Processing|Final:|Trim plan|\\\\$|^\\\\$\" /Users/thomasbalaban/Downloads/projects/youtube-automator/shorts-auto-editor/output/2026-05-09_21-03.txt)",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\)['payload']; print\\(json.dumps\\({'verdict':d['verdict'],'score':d['current_score'],'breakdown':d['score_breakdown'],'concerns':d['concerns'],'review':d.get\\('review_summary'\\),'iters':d.get\\('iterations_seen'\\)}, indent=2\\)\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('/Users/thomasbalaban/Downloads/projects/youtube-automator/shorts-auto-editor/utils/timestamp_processor.py'\\).read\\(\\)\\); ast.parse\\(open\\('/Users/thomasbalaban/Downloads/projects/youtube-automator/shorts-auto-editor/clip_editor/intelligent_trimmer.py'\\).read\\(\\)\\); print\\('OK: parses'\\)\")",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\)['payload']; print\\(json.dumps\\({'verdict':d['verdict'],'score':d['current_score'],'breakdown':d['score_breakdown'],'concerns':d['concerns'][:3],'iters':d.get\\('iterations_seen'\\)}, indent=2\\)\\)\")"
     ],
     "additionalDirectories": [
       "/Users/thomasbalaban/Downloads/projects/shorts_strategist",

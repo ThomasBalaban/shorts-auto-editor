@@ -219,20 +219,46 @@ def extend_segments_for_dialogue(
         # --- STEP 1: WHISPER-BASED PROTECTION (The Fix) ---
         # Check if the cut point (ai_end) slices through a word or is uncomfortably close
         extension_found = False
-        
+
         # Look for words that start before the cut but end after it
         # OR words that start within a small window after the cut (don't cut mid-sentence flow)
-        sentence_flow_window = 0.5 
-        
+        sentence_flow_window = 0.5
+
+        # A real spoken word is rarely over 1.5s. Whisper sometimes assigns
+        # huge durations when there's silence around a token, or stretches a
+        # held scream/shout ("MEEEEE!") into a single word. Protecting those
+        # against the trimmer's cut decision yanks dead air back into the
+        # final cut. When a candidate word's annotated span is longer than
+        # this threshold we trust the trimmer's intent over the protector.
+        MAX_PROTECTABLE_WORD_DURATION = 1.5
+
         for (w_start, w_end, text, track) in all_words:
+            word_duration = w_end - w_start
+
             # Case A: Cut is inside a word
             if w_start <= ai_end < w_end:
+                if word_duration > MAX_PROTECTABLE_WORD_DURATION:
+                    log_func(
+                        f"      🚫 Skipped abnormally-long protected word "
+                        f"({track}): '{text}' "
+                        f"({w_start:.2f}-{w_end:.2f}, {word_duration:.1f}s) "
+                        "— likely scream / held vocal / silence artifact, "
+                        "honoring trimmer's cut"
+                    )
+                    continue
                 log_func(f"      🛡️ Protected cut word ({track}): '{text}' ({w_start:.2f}-{w_end:.2f})")
                 new_end = max(new_end, w_end + buffer_seconds)
                 extension_found = True
-            
+
             # Case B: Cut is right before a word (likely mid-sentence)
             elif ai_end <= w_start < (ai_end + sentence_flow_window):
+                if word_duration > MAX_PROTECTABLE_WORD_DURATION:
+                    log_func(
+                        f"      🚫 Skipped abnormally-long flow word "
+                        f"({track}): '{text}' "
+                        f"({w_start:.2f}-{w_end:.2f}, {word_duration:.1f}s)"
+                    )
+                    continue
                 # Only extend if it doesn't push us too far
                 if (w_end - ai_end) < max_extension_seconds:
                     log_func(f"      🛡️ Extended for flow ({track}): '{text}' starts at {w_start:.2f}")

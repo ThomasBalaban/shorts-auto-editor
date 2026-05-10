@@ -35,6 +35,12 @@ from utils.models import (
     get_safety_settings,
 )
 from video_utils import get_video_duration
+from clip_editor.narrative_planner import (
+    build_retry_addendum,
+    format_anchors_for_prompt,
+    repair_segments_for_anchors,
+    validate_segments_against_anchors,
+)
 
 
 class IntelligentTrimmer:
@@ -60,7 +66,15 @@ class IntelligentTrimmer:
         video_path: str,
         mic_transcriptions: Optional[List[str]] = None,
         desktop_transcriptions: Optional[List[str]] = None,
+        narrative_plan: Optional[dict] = None,
     ) -> List[Tuple[float, float]]:
+        """Pick segments to keep.
+
+        ``narrative_plan`` (optional) is the output of NarrativePlanner.plan().
+        When supplied, its anchors become hard constraints in the prompt and
+        an auto-repair pass after parsing guarantees they're covered. When
+        ``None``, behavior is identical to the prior blind-pick path.
+        """
         try:
             self.log_func("\n" + "=" * 60)
             self.log_func("🎬 INTELLIGENT CLIP TRIMMING — ANALYSIS PHASE")
@@ -71,6 +85,7 @@ class IntelligentTrimmer:
                 video_duration,
                 mic_transcriptions,
                 desktop_transcriptions,
+                narrative_plan,
             )
         except Exception as e:
             self.log_func(f"❌ Trim analysis failed: {e}")
@@ -132,6 +147,7 @@ class IntelligentTrimmer:
         video_duration: float,
         mic_transcriptions,
         desktop_transcriptions,
+        narrative_plan: Optional[dict] = None,
     ) -> List[Tuple[float, float]]:
         try:
             mime_type = self._mime_type_for(video_path)
@@ -142,6 +158,7 @@ class IntelligentTrimmer:
                 video_duration,
                 mic_transcriptions,
                 desktop_transcriptions,
+                narrative_plan,
             )
 
             if file_size <= self.INLINE_MAX_BYTES:
@@ -152,6 +169,7 @@ class IntelligentTrimmer:
                 )
                 return self._trim_via_inline(
                     video_path, mime_type, prompt, video_duration,
+                    narrative_plan,
                 )
             else:
                 self.log_func(
@@ -161,6 +179,7 @@ class IntelligentTrimmer:
                 )
                 return self._trim_via_files_api(
                     video_path, mime_type, prompt, video_duration,
+                    narrative_plan,
                 )
         except Exception as e:
             self.log_func(f"❌ Gemini trim analysis failed: {e}")
@@ -175,6 +194,7 @@ class IntelligentTrimmer:
         mime_type: str,
         prompt: str,
         video_duration: float,
+        narrative_plan: Optional[dict] = None,
     ) -> List[Tuple[float, float]]:
         """Send the video as raw bytes in the request body."""
         with open(video_path, "rb") as f:
@@ -185,24 +205,21 @@ class IntelligentTrimmer:
             mime_type=mime_type,
         )
 
-        self.log_func(
-            f"   Analysing for trim decisions "
-            f"(thinking={THINKING_TRIM}) …"
-        )
-        response = self.client.models.generate_content(
-            model=MODEL_PRO,
-            contents=[prompt, video_part],
-            config=types.GenerateContentConfig(
-                safety_settings=self.safety_settings,
-                thinking_config=types.ThinkingConfig(
-                    thinking_level=THINKING_TRIM,
+        def _generate(prompt_text: str):
+            return self.client.models.generate_content(
+                model=MODEL_PRO,
+                contents=[prompt_text, video_part],
+                config=types.GenerateContentConfig(
+                    safety_settings=self.safety_settings,
+                    thinking_config=types.ThinkingConfig(
+                        thinking_level=THINKING_TRIM,
+                    ),
                 ),
-            ),
+            )
+
+        return self._gemini_with_anchor_validation(
+            _generate, prompt, video_duration, narrative_plan,
         )
-        if not response or not getattr(response, "text", None):
-            self.log_func("❌ Gemini returned empty response")
-            return []
-        return self._parse_trim_response(response.text, video_duration)
 
     # ── File API path — large files ────────────────────────────────────────
     def _trim_via_files_api(
@@ -211,6 +228,7 @@ class IntelligentTrimmer:
         mime_type: str,
         prompt: str,
         video_duration: float,
+        narrative_plan: Optional[dict] = None,
     ) -> List[Tuple[float, float]]:
         """Upload via Files API, poll to ACTIVE, reference by URI."""
         video_file = None
@@ -245,30 +263,102 @@ class IntelligentTrimmer:
                 mime_type=video_file.mime_type or mime_type,
             )
 
-            self.log_func(
-                f"   Analysing for trim decisions "
-                f"(thinking={THINKING_TRIM}) …"
-            )
-            response = self.client.models.generate_content(
-                model=MODEL_PRO,
-                contents=[prompt, file_part],
-                config=types.GenerateContentConfig(
-                    safety_settings=self.safety_settings,
-                    thinking_config=types.ThinkingConfig(
-                        thinking_level=THINKING_TRIM,
+            def _generate(prompt_text: str):
+                return self.client.models.generate_content(
+                    model=MODEL_PRO,
+                    contents=[prompt_text, file_part],
+                    config=types.GenerateContentConfig(
+                        safety_settings=self.safety_settings,
+                        thinking_config=types.ThinkingConfig(
+                            thinking_level=THINKING_TRIM,
+                        ),
                     ),
-                ),
+                )
+
+            return self._gemini_with_anchor_validation(
+                _generate, prompt, video_duration, narrative_plan,
             )
-            if not response or not getattr(response, "text", None):
-                self.log_func("❌ Gemini returned empty response")
-                return []
-            return self._parse_trim_response(response.text, video_duration)
         finally:
             if video_file is not None:
                 try:
                     self.client.files.delete(name=video_file.name)
                 except Exception:
                     pass
+
+    # ── Anchor-aware orchestration ─────────────────────────────────────────
+    def _gemini_with_anchor_validation(
+        self,
+        generate_fn,
+        prompt: str,
+        video_duration: float,
+        narrative_plan: Optional[dict],
+    ) -> List[Tuple[float, float]]:
+        """Run the LLM call, then validate against narrative anchors.
+
+        Path:
+          1. Call once with the (anchor-augmented) prompt.
+          2. If a plan exists and required anchors are missing from the
+             returned segments, append a corrective addendum and call once
+             more (single retry, per design decision).
+          3. Whatever the second response yields, run auto-repair to extend
+             or append segments so every required anchor is fully covered.
+
+        When ``narrative_plan`` is None, this collapses to the original
+        single-call behavior.
+        """
+        self.log_func(
+            f"   Analysing for trim decisions "
+            f"(thinking={THINKING_TRIM}) …"
+        )
+        response = generate_fn(prompt)
+        if not response or not getattr(response, "text", None):
+            self.log_func("❌ Gemini returned empty response")
+            return []
+        segments = self._parse_trim_response(response.text, video_duration)
+
+        if not narrative_plan:
+            return segments
+
+        violations = validate_segments_against_anchors(segments, narrative_plan)
+        if not violations:
+            return segments
+
+        self.log_func(
+            f"\n⚠️  {len(violations)} narrative anchor(s) not covered by "
+            f"first response — retrying once with correction:"
+        )
+        for v in violations:
+            self.log_func(
+                f"      missing {v['label']}: "
+                f"{v['start']:.1f}-{v['end']:.1f}s"
+            )
+
+        retry_prompt = prompt + build_retry_addendum(violations)
+        try:
+            retry_resp = generate_fn(retry_prompt)
+            if retry_resp and getattr(retry_resp, "text", None):
+                retry_segments = self._parse_trim_response(
+                    retry_resp.text, video_duration,
+                )
+                if retry_segments:
+                    segments = retry_segments
+        except Exception as e:
+            self.log_func(f"   ⚠ retry call failed: {e}")
+
+        # Final guarantee: any anchor still missing gets repaired locally.
+        violations = validate_segments_against_anchors(segments, narrative_plan)
+        if violations:
+            self.log_func(
+                f"\n🔧 Auto-repairing {len(violations)} anchor(s) "
+                "still missing after retry:"
+            )
+            segments = repair_segments_for_anchors(
+                segments, violations, video_duration, self.log_func,
+            )
+        else:
+            self.log_func("   ✅ All narrative anchors covered after retry")
+
+        return segments
 
     def _upload_with_retry(self, video_path: str, mime_type: str):
         """
@@ -339,6 +429,7 @@ class IntelligentTrimmer:
         video_duration: float,
         mic_transcriptions,
         desktop_transcriptions,
+        narrative_plan: Optional[dict] = None,
     ) -> str:
         mic_dialogue = self._format_transcription(mic_transcriptions or [])
         game_dialogue = self._format_transcription(desktop_transcriptions or [])
@@ -350,6 +441,17 @@ class IntelligentTrimmer:
             self.log_func(
                 f"   Added {len(desktop_transcriptions)} game lines to prompt")
 
+        # When the narrative planner has run, its anchors get top billing —
+        # the trimmer must keep every must-preserve range fully covered. The
+        # block is empty (collapses to no-op) when no plan was provided.
+        anchors_block = format_anchors_for_prompt(narrative_plan or {})
+        if anchors_block:
+            self.log_func(
+                f"   ⚓ Injecting "
+                f"{len(narrative_plan.get('must_keep_moments', []))} "
+                "must-keep moments into trim prompt"
+            )
+
         # Gemini 3 prompt-engineering best practice:
         #  - Put the data context first
         #  - Put the instructions at the end ("Based on the information above…")
@@ -358,7 +460,7 @@ class IntelligentTrimmer:
 Total duration: {video_duration:.1f}s
 Target output: 12–45s
 
-=== DIALOGUE TRANSCRIPTS ===
+{anchors_block}=== DIALOGUE TRANSCRIPTS ===
 PLAYER VOICE (microphone — the streamer's commentary):
 {mic_dialogue}
 
