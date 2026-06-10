@@ -87,6 +87,31 @@ def force_strategist_task(
         return False
 
 
+def thinker_is_active(
+    log_func: Callable[[str], None] = print,
+    timeout_s: float = 3.0,
+) -> bool:
+    """Best-effort check of whether the strategist's thinker loop is running.
+
+    Returns True only when ``GET /thinker/status`` is reachable and reports a
+    working state (``running``/``idle``). Returns False when the strategist is
+    unreachable (process down) or the thinker is ``stopped``/``error`` — in which
+    case no directive will ever be written and there's no point waiting for one.
+    """
+    url = f"{_strategist_base_url()}/thinker/status"
+    try:
+        from urllib.request import urlopen
+        with urlopen(url, timeout=timeout_s) as resp:
+            if not (200 <= resp.status < 300):
+                return False
+            data = json.loads(resp.read().decode("utf-8"))
+        state = (data or {}).get("state")
+        return state in ("running", "idle")
+    except Exception as e:
+        log_func(f"   ⚠ strategist/thinker not reachable: {e}")
+        return False
+
+
 # ─── directive I/O ───────────────────────────────────────────────────────────
 
 def read_directive(base: str) -> Optional[Dict[str, Any]]:
@@ -556,6 +581,8 @@ class IterationOrchestrator:
         sync_offset: float,
         detailed_logs: bool = False,
         final_output_path: Optional[str] = None,
+        camera_region: Optional[dict] = None,
+        gameplay_region: Optional[dict] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """Run the iteration loop on one video.
 
@@ -595,6 +622,8 @@ class IterationOrchestrator:
                 detailed_logs=detailed_logs,
                 log_func=self.log_func,
                 pre_baked=pre_baked,
+                camera_region=camera_region,
+                gameplay_region=gameplay_region,
             )
             if metadata is None:
                 self.log_func(f"❌ Iteration {iteration} returned no metadata; aborting loop.")
@@ -633,6 +662,19 @@ class IterationOrchestrator:
                 final = self._pick_final(base, states, default_iteration=iteration)
                 return self._finalize_and_return(
                     ship_state=final, states=states,
+                    metadata_path=metadata_path,
+                    final_output_path=final_output_path,
+                )
+
+            # If the strategist/thinker isn't running there will never be a
+            # directive — skip the (up to 10 min) wait entirely and ship this
+            # iteration now instead of burning the full timeout.
+            if not thinker_is_active(log_func=self.log_func):
+                self.log_func(
+                    f"⚠ Strategist/thinker is off — skipping iteration wait, "
+                    f"shipping v{iteration}.")
+                return self._finalize_and_return(
+                    ship_state=states[iteration], states=states,
                     metadata_path=metadata_path,
                     final_output_path=final_output_path,
                 )

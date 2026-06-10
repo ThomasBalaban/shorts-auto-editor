@@ -20,9 +20,60 @@ from ai_director.data_models import TimelineEvent
 
 
 class VideoEditor:
-    def __init__(self, log_func=None):
+    # Default focus regions (normalized 0–1 of the 1080×1920 frame).
+    # These reproduce the legacy behavior when no layout preset is configured:
+    #   • camera   → top-left corner   (old facecam position)
+    #   • gameplay → centre of frame
+    DEFAULT_CAMERA_REGION = {"x": 0.0, "y": 0.0, "w": 0.30, "h": 0.30}
+    DEFAULT_GAMEPLAY_REGION = {"x": 0.25, "y": 0.25, "w": 0.50, "h": 0.50}
+
+    def __init__(self, log_func=None, camera_region=None, gameplay_region=None):
         self.log_func = log_func or print
-        self.log_func("📹 AI Director Video Editor initialised (snappy zooms).")
+        self.camera_region = self._normalize_region(
+            camera_region, self.DEFAULT_CAMERA_REGION)
+        self.gameplay_region = self._normalize_region(
+            gameplay_region, self.DEFAULT_GAMEPLAY_REGION)
+        cam_c = self._center(self.camera_region)
+        game_c = self._center(self.gameplay_region)
+        self.log_func(
+            "📹 AI Director Video Editor initialised (snappy zooms). "
+            f"cam_center=({cam_c[0]:.2f},{cam_c[1]:.2f}) "
+            f"game_center=({game_c[0]:.2f},{game_c[1]:.2f})"
+        )
+
+    # ── Region helpers ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_region(region, fallback):
+        """Validate a normalized {x,y,w,h} region, falling back to a default
+        when missing or malformed. All values are clamped to [0, 1]."""
+        if not isinstance(region, dict):
+            return dict(fallback)
+        try:
+            r = {k: float(region[k]) for k in ("x", "y", "w", "h")}
+        except (KeyError, TypeError, ValueError):
+            return dict(fallback)
+        for k in ("x", "y", "w", "h"):
+            r[k] = max(0.0, min(1.0, r[k]))
+        if r["w"] <= 0 or r["h"] <= 0:
+            return dict(fallback)
+        return r
+
+    @staticmethod
+    def _center(region):
+        """Return the (cx, cy) center of a normalized region."""
+        return (region["x"] + region["w"] / 2.0,
+                region["y"] + region["h"] / 2.0)
+
+    @staticmethod
+    def _focus_exprs(center):
+        """Build zoompan x/y expressions that center the crop window
+        (size iw/zoom × ih/zoom) on the given normalized (cx, cy), clamped
+        in-bounds."""
+        cx, cy = center
+        x_expr = f"max(0,min(iw-iw/zoom,{cx:.4f}*iw-(iw/zoom)/2))"
+        y_expr = f"max(0,min(ih-ih/zoom,{cy:.4f}*ih-(ih/zoom)/2))"
+        return x_expr, y_expr
 
     # ── Public entry ──────────────────────────────────────────────────────────
 
@@ -154,9 +205,10 @@ class VideoEditor:
 
     def _cam_zoom_filter(self, duration: float) -> str:
         """
-        Punch-in on the webcam corner.
+        Punch-in on the configured camera region.
         1.50 → 1.65  (was 1.50 → 1.575)
         Ramp completes in 60 % of segment duration.
+        Focus follows ``self.camera_region`` (legacy default: top-left).
         """
         if duration <= 0:
             return "[0:v]scale=1080:1920,format=yuv420p[output]"
@@ -170,17 +222,20 @@ class VideoEditor:
             f"min(1.65,if(eq(on,0),1.50,pzoom+{step:.6f})),"
             f"1.65)"
         )
+        x_expr, y_expr = self._focus_exprs(self._center(self.camera_region))
         return (
             "[0:v]setpts=PTS-STARTPTS,"
-            f"zoompan=z='{z_expr}':x=0:y=0:d=1:s=1080x1920:fps=60,"
+            f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
+            ":d=1:s=1080x1920:fps=60,"
             "format=yuv420p[output]"
         )
 
     def _game_zoom_filter(self, duration: float) -> str:
         """
-        Punch-in centred on gameplay.
+        Punch-in on the configured gameplay region.
         1.30 → 1.55  (was 1.33 → 1.46)
         Ramp completes in 60 % of segment duration.
+        Focus follows ``self.gameplay_region`` (legacy default: frame centre).
         """
         if duration <= 0:
             return "[0:v]scale=1080:1920,format=yuv420p[output]"
@@ -193,8 +248,7 @@ class VideoEditor:
             f"min(1.55,if(eq(on,0),1.30,pzoom+{step:.6f})),"
             f"1.55)"
         )
-        x_expr = "(iw-iw/zoom)/2"
-        y_expr = "(ih-ih/zoom)/2"
+        x_expr, y_expr = self._focus_exprs(self._center(self.gameplay_region))
         return (
             "[0:v]setpts=PTS-STARTPTS,"
             f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"

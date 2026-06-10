@@ -31,6 +31,10 @@ _settings: Dict[str, Any] = {
     "sync_offset": -0.15,
     "output_dir": os.path.join(os.path.expanduser("~"), "Desktop"),
     "enable_trimming": True,
+    # Layout presets for zoom focus. Edited from the hub's "Layout" tab and
+    # persisted to hub_settings.json via the launcher. Empty → legacy focus.
+    "region_presets": [],
+    "active_preset": "",
 }
 _logs: deque = deque(maxlen=50000)
 _processing = False
@@ -66,6 +70,24 @@ def _save_settings() -> None:
 
 
 _load_settings()
+
+
+def _resolve_regions() -> tuple:
+    """Resolve the active layout preset into (camera_region, gameplay_region).
+
+    Returns (None, None) when no preset is active or it can't be found, so the
+    VideoEditor falls back to its legacy default focus. Never raises.
+    """
+    try:
+        name = (_settings.get("active_preset") or "").strip()
+        if not name:
+            return None, None
+        for p in (_settings.get("region_presets") or []):
+            if isinstance(p, dict) and p.get("name") == name:
+                return p.get("camera"), p.get("gameplay")
+    except Exception as e:
+        print(f"[settings] Could not resolve regions: {e}", flush=True)
+    return None, None
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -105,6 +127,11 @@ def _processing_worker() -> None:
         _log(traceback.format_exc())
         _processing = False
         return
+
+    # Re-read settings from disk so layout presets saved via the launcher
+    # (while this API was already running) are picked up for this batch.
+    _load_settings()
+    camera_region, gameplay_region = _resolve_regions()
 
     queued_indices = [
         i for i, f in enumerate(_files) if f["status"] == "queued"
@@ -208,6 +235,8 @@ def _processing_worker() -> None:
                     sync_offset=_settings["sync_offset"],
                     detailed_logs=True,
                     final_output_path=entry["output_path"],
+                    camera_region=camera_region,
+                    gameplay_region=gameplay_region,
                 )
                 # Iteration-loop path writes its own per-video metadata file;
                 # do NOT add to batch_metadata so we don't double-write.
@@ -225,6 +254,8 @@ def _processing_worker() -> None:
                     detailed_logs=True,
                     log_func=_log,
                     enable_trimming=_settings["enable_trimming"],
+                    camera_region=camera_region,
+                    gameplay_region=gameplay_region,
                 )
                 with _lock:
                     _files[idx]["output_path"] = (

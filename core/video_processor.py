@@ -54,6 +54,8 @@ class VideoProcessor:
         log_func,
         enable_trimming: bool = True,
         pre_baked=None,  # Optional[core.iteration_loop.PreBakedDecisions]
+        camera_region=None,  # Optional[dict] normalized {x,y,w,h} for zoom focus
+        gameplay_region=None,  # Optional[dict] normalized {x,y,w,h} for zoom focus
     ):
         temp_dir = tempfile.gettempdir()
         trim_segments = None
@@ -365,7 +367,11 @@ class VideoProcessor:
             # ── PHASE 5: Apply zoom edits ──────────────────────────────
             video_to_subtitle = video_to_process
             if decision_timeline:
-                editor = VideoEditor(log_func=log_func)
+                editor = VideoEditor(
+                    log_func=log_func,
+                    camera_region=camera_region,
+                    gameplay_region=gameplay_region,
+                )
                 edited_video_path = os.path.join(
                     temp_dir,
                     f"{os.path.basename(video_to_process)}_edited.mp4",
