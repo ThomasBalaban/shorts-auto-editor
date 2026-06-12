@@ -16,10 +16,12 @@ class OnomatopoeiaDetector:
     NMS_RADIUS_SEC: float = 0.4
     COOLDOWN_SEC: float = 0.5
 
-    def __init__(self, sensitivity: float = 0.5, device: str = "cpu", log_func=None):
+    def __init__(self, sensitivity: float = 0.5, device: str = "cpu", log_func=None,
+                 game_track_index: str = "a:2"):
         self.sensitivity = sensitivity
         self.device = device
         self.log_func = log_func or print
+        self.game_track_index = game_track_index
         self.event_history: List[Dict[str, float]] = []
         self._initialize_components()
         self.log_func("✅ Cross‑modal multimodal system ready!")
@@ -38,7 +40,7 @@ class OnomatopoeiaDetector:
         video_map: Dict[float, Dict] = {}
         try:
             self.log_func(f"\n{'='*60}\nSTARTING CROSS‑MODAL ANALYSIS\n{'='*60}")
-            audio_path = self.file_processor.extract_audio_from_video(video_path, track_index="a:2")
+            audio_path = self.file_processor.extract_audio_from_video(video_path, track_index=self.game_track_index)
 
             audio_events = self.onset_detector.detect_gaming_onsets(audio_path)
             if not audio_events: return [], {}

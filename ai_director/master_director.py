@@ -52,32 +52,39 @@ class MasterDirector:
         audio_events: List[Dict],
         video_analysis_map: Dict[float, Dict],  # legacy arg, no longer required
         camera_region: Optional[Dict] = None,   # normalized {x,y,w,h} for gaze
+        camera_mode: str = "vtuber",            # "vtuber" | "facecam" | "none"
+        mic_track_index: str = "a:1",
+        game_track_index: str = "a:2",
     ) -> List[TimelineEvent]:
         self.log_func("--- AI Director: Starting Content Analysis ---")
 
         # One vision analyzer shared by the beat pass and the gaze gate.
         analyzer = self._make_analyzer()
+        has_camera = camera_mode != "none"
 
         # ── 1. Signals ────────────────────────────────────────────────────────
         utterances = sig.parse_utterances(mic_transcription)
         mic_env = sig.energy_envelope(
-            video_path, "a:1", self.log_func)        # mic / player voice
+            video_path, mic_track_index, self.log_func)    # mic / player voice
         game_env = sig.energy_envelope(
-            video_path, "a:2", self.log_func)        # desktop / game audio
+            video_path, game_track_index, self.log_func)   # desktop / game audio
         beats = sig.vision_beats(
             video_path, video_duration, analyzer=analyzer, log_func=self.log_func)
         self.log_func(
             f"   signals: {len(utterances)} utterances, "
             f"mic_env={'ok' if mic_env.available else 'none'}, "
             f"game_env={'ok' if game_env.available else 'none'}, "
-            f"{len(beats)} vision beats")
+            f"{len(beats)} vision beats, camera_mode={camera_mode}")
 
         # ── 2. Candidates ─────────────────────────────────────────────────────
         candidates: List[ZoomCandidate] = []
-        cam = generate_cam_candidates(
-            utterances, mic_env, self.classifier, self.log_func)
-        self._apply_gaze_gate(cam, video_path, camera_region, analyzer)
-        candidates += cam
+        if has_camera:
+            cam = generate_cam_candidates(
+                utterances, mic_env, self.classifier, self.log_func)
+            self._apply_gaze_gate(cam, video_path, camera_region, analyzer, camera_mode)
+            candidates += cam
+        else:
+            self.log_func("   • camera_mode=none — skipping cam reactions")
         candidates += generate_game_candidates(
             beats, game_env, audio_events, self.log_func)
 
@@ -108,6 +115,7 @@ class MasterDirector:
         video_path: str,
         camera_region: Optional[Dict],
         analyzer,
+        camera_mode: str = "vtuber",
     ) -> None:
         """Penalize cam reactions whose avatar looks bugged (looking down/away
         or face not visible) in the camera region, so a game zoom or no-zoom
@@ -119,15 +127,19 @@ class MasterDirector:
         for c in cam_candidates:
             if c.kind != "cam_reaction" or c.score < SCORE_THRESHOLD:
                 continue
-            q = analyzer.analyze_camera_gaze(video_path, c.t_peak, camera_region)
-            if q is None or q >= 1.0:
+            q = analyzer.analyze_camera_gaze(
+                video_path, c.t_peak, camera_region, camera_mode)
+            if q is None:
                 continue
-            old = c.score
-            c.score = round(c.score * (0.4 + 0.6 * q), 3)
+            # Tag every checked cam reaction so the gaze quality flows into the
+            # metadata (and the strategist's review), not just penalized ones.
             c.reason = f"{c.reason}|gaze={q:.2f}"
-            self.log_func(
-                f"   👁 gaze penalty: cam @ {c.t_peak:.2f}s "
-                f"{old:.2f}→{c.score:.2f} (eyes q={q:.2f})")
+            if q < 1.0:
+                old = c.score
+                c.score = round(c.score * (0.4 + 0.6 * q), 3)
+                self.log_func(
+                    f"   👁 gaze penalty: cam @ {c.t_peak:.2f}s "
+                    f"{old:.2f}→{c.score:.2f} (eyes q={q:.2f})")
 
     # ── Selection: greedy non-max suppression by score ────────────────────────
     def _select(self, candidates: List[ZoomCandidate]) -> List[TimelineEvent]:
@@ -178,3 +190,68 @@ class MasterDirector:
             if abs(c.t_peak - k.t_peak) < REFRACTORY_S:
                 return k
         return None
+
+
+# Cam-region zoom actions subject to the gaze constraint.
+_CAM_ACTIONS = ("zoom_to_cam", "zoom_to_cam_reaction")
+# Strategist-added cam zooms below this gaze quality are dropped before render.
+GAZE_ENFORCE_MIN = 0.5
+
+
+def enforce_gaze_on_strategist_cam(
+    timeline: List[TimelineEvent],
+    video_path: str,
+    camera_region: Optional[Dict],
+    log_func: Callable[[str], None] = print,
+    camera_mode: str = "vtuber",
+) -> List[TimelineEvent]:
+    """Drop strategist-added/replaced cam zooms whose avatar is bugged or
+    looking away — the same eye constraint the director enforces on its own
+    cam reactions, now applied to the thinker's edits too.
+
+    Only events tagged ``reason="strategist directive: ..."`` are (re)checked;
+    the director's own cam reactions already passed the gaze gate. When
+    ``camera_mode="none"`` every strategist cam zoom is dropped (no camera to
+    show). No-op when there are no strategist cam events or the analyzer is
+    unavailable. Unknown/failed gaze checks keep the event (don't punish on a
+    flaky call).
+    """
+    targets = [
+        e for e in timeline
+        if getattr(e, "action", "") in _CAM_ACTIONS
+        and str(getattr(e, "reason", "")).startswith("strategist directive")
+    ]
+    if not targets:
+        return timeline
+
+    # No camera → there's nothing to punch into; drop every strategist cam zoom.
+    if camera_mode == "none":
+        for e in targets:
+            log_func(
+                f"   👁 strategist cam zoom @ {e.timestamp:.2f}s dropped — "
+                f"camera_mode=none")
+        ids = {id(e) for e in targets}
+        return [e for e in timeline if id(e) not in ids]
+
+    if not camera_region:
+        return timeline
+
+    try:
+        from llm.gemini_vision_analyzer import GeminiVisionAnalyzer
+        analyzer = GeminiVisionAnalyzer(log_func=log_func)
+    except Exception as e:
+        log_func(f"   ⚠ gaze enforcement: analyzer unavailable: {e}")
+        return timeline
+
+    drop = set()
+    for e in targets:
+        q = analyzer.analyze_camera_gaze(
+            video_path, e.timestamp, camera_region, camera_mode)
+        if q is not None and q < GAZE_ENFORCE_MIN:
+            log_func(
+                f"   👁 strategist cam zoom @ {e.timestamp:.2f}s dropped — "
+                f"avatar not camera-ready (gaze q={q:.2f})")
+            drop.add(id(e))
+    if not drop:
+        return timeline
+    return [e for e in timeline if id(e) not in drop]

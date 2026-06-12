@@ -207,6 +207,7 @@ class GeminiVisionAnalyzer:
         video_path: str,
         timestamp: float,
         region: Dict,
+        camera_mode: str = "vtuber",
     ) -> Optional[float]:
         """Judge whether the avatar in the camera region looks engaged at a
         moment, returning a quality in [0,1]:
@@ -227,9 +228,12 @@ class GeminiVisionAnalyzer:
             if not cropped:
                 return None
 
+            subject = (
+                "the streamer's real face on a webcam" if camera_mode == "facecam"
+                else "the VTuber/streamer avatar")
             prompt = (
-                "This is a cropped view of a VTuber/streamer avatar from a "
-                "webcam region. Judge the avatar's face only.\n"
+                f"This is a cropped view of {subject} from a webcam region. "
+                "Judge the face only.\n"
                 "Respond with a JSON object with exactly two boolean keys:\n"
                 '1. "face_visible": is the character\'s face clearly visible '
                 "and not glitched, cut off, or obscured?\n"

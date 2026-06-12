@@ -56,6 +56,13 @@ class VideoProcessor:
         pre_baked=None,  # Optional[core.iteration_loop.PreBakedDecisions]
         camera_region=None,  # Optional[dict] normalized {x,y,w,h} for zoom focus
         gameplay_region=None,  # Optional[dict] normalized {x,y,w,h} for zoom focus
+        camera_mode: str = "vtuber",          # "vtuber" | "facecam" | "none"
+        game_subtitles_enabled: bool = True,
+        onomatopoeia_enabled: bool = True,
+        mic_track_index: str = "a:1",
+        game_track_index: str = "a:2",
+        mic_margin_v=None,                    # ASS MarginV override for mic subs
+        game_margin_v=None,                   # ASS MarginV override for game subs
     ):
         temp_dir = tempfile.gettempdir()
         trim_segments = None
@@ -97,7 +104,7 @@ class VideoProcessor:
             mic_audio_path = os.path.join(
                 temp_dir, f"{os.path.basename(input_file)}_mic.wav")
             if core.transcriber.convert_to_audio(
-                input_file, mic_audio_path, "a:1", log_func
+                input_file, mic_audio_path, mic_track_index, log_func
             ):
                 (
                     mic_transcriptions_raw,
@@ -120,7 +127,7 @@ class VideoProcessor:
             desktop_audio_path = os.path.join(
                 temp_dir, f"{os.path.basename(input_file)}_desktop.wav")
             if core.transcriber.convert_to_audio(
-                input_file, desktop_audio_path, "a:2", log_func
+                input_file, desktop_audio_path, game_track_index, log_func
             ):
                 (
                     desktop_transcriptions_raw,
@@ -220,7 +227,7 @@ class VideoProcessor:
                         )
                         core.transcriber.convert_to_audio(
                             input_file, mic_audio_path_for_analysis,
-                            "a:1", log_func,
+                            mic_track_index, log_func,
                         )
                         if desktop_transcriptions_raw:
                             desktop_audio_path_for_analysis = os.path.join(
@@ -229,7 +236,7 @@ class VideoProcessor:
                             )
                             core.transcriber.convert_to_audio(
                                 input_file, desktop_audio_path_for_analysis,
-                                "a:2", log_func,
+                                game_track_index, log_func,
                             )
 
                         extended_trim_segments = extend_segments_for_dialogue(
@@ -312,11 +319,13 @@ class VideoProcessor:
                     video_to_process,
                     log_func,
                     is_mic_track=True,
+                    mic_margin_v=mic_margin_v,
                 )
                 mic_subtitle_path = mic_subtitle_path_srt.replace(
                     ".srt", ".ass")
 
-            if desktop_transcriptions_adjusted:
+            # Game/desktop subtitles — operator-toggleable.
+            if game_subtitles_enabled and desktop_transcriptions_adjusted:
                 desktop_subtitle_path = os.path.join(
                     temp_dir, f"{os.path.basename(input_file)}_desktop.srt")
                 convert_to_srt(
@@ -325,6 +334,10 @@ class VideoProcessor:
                     video_to_process,
                     log_func,
                 )
+            else:
+                if not game_subtitles_enabled:
+                    log_func("   Game subtitles disabled — skipping desktop track")
+                desktop_subtitle_path = None
 
             # ── PHASE 3: Onomatopoeia Detection (on trimmed clip) ──────
             subtitle_ext = ".ass" if animation_type != "Static" else ".srt"
@@ -333,9 +346,9 @@ class VideoProcessor:
                 f"{os.path.basename(video_to_process)}_ono{subtitle_ext}",
             )
             if pre_baked is not None:
-                # Replay path: events already in output time. Just render the
-                # subtitle file from them.
-                if events:
+                # Replay path: events already in output time. Render the words
+                # only when onomatopoeia is enabled (events still feed zooms).
+                if events and onomatopoeia_enabled:
                     from subtitle_generator import SubtitleGenerator
                     SubtitleGenerator(log_func=log_func).create_subtitle_file(
                         events, onomatopoeia_subtitle_path, animation_type)
@@ -343,12 +356,20 @@ class VideoProcessor:
                     onomatopoeia_subtitle_path = None
             else:
                 log_func("\n--- PHASE 3: Onomatopoeia Detection ---")
-                detector = OnomatopoeiaDetector(log_func=log_func)
+                detector = OnomatopoeiaDetector(
+                    log_func=log_func, game_track_index=game_track_index)
                 detector.fusion_engine.sync_offset = sync_offset
+                # Always detect — the AI Director uses `events` as a game-audio
+                # signal even when the onomatopoeia overlay is turned off.
                 events, video_map = detector.analyze_file(
                     video_to_process, animation_type, sync_offset=sync_offset)
-                detector.subtitle_generator.create_subtitle_file(
-                    events, onomatopoeia_subtitle_path, animation_type)
+                if onomatopoeia_enabled:
+                    detector.subtitle_generator.create_subtitle_file(
+                        events, onomatopoeia_subtitle_path, animation_type)
+                else:
+                    log_func("   Onomatopoeia overlay disabled — words hidden, "
+                             "events still feed zoom decisions")
+                    onomatopoeia_subtitle_path = None
                 del detector
                 gc.collect()
 
@@ -363,10 +384,25 @@ class VideoProcessor:
                     audio_events=events,
                     video_analysis_map=video_map,
                     camera_region=camera_region,
+                    camera_mode=camera_mode,
+                    mic_track_index=mic_track_index,
+                    game_track_index=game_track_index,
                 )
 
             # ── PHASE 5: Apply zoom edits ──────────────────────────────
             video_to_subtitle = video_to_process
+            if decision_timeline:
+                # Enforce the camera-gaze constraint on any cam zooms the
+                # strategist added/replaced (iteration > 1). The director's own
+                # cam reactions were already gaze-gated; this catches the
+                # thinker's edits so a bugged avatar never gets punched into.
+                from ai_director.master_director import (
+                    enforce_gaze_on_strategist_cam,
+                )
+                decision_timeline = enforce_gaze_on_strategist_cam(
+                    decision_timeline, video_to_process, camera_region, log_func,
+                    camera_mode=camera_mode)
+
             if decision_timeline:
                 editor = VideoEditor(
                     log_func=log_func,
@@ -394,6 +430,8 @@ class VideoProcessor:
                 onomatopoeia_srt=onomatopoeia_subtitle_path,
                 onomatopoeia_events=events,
                 log=log_func,
+                mic_margin_v=mic_margin_v,
+                game_margin_v=game_margin_v,
             )
             log_func("✅ Subtitles embedded — final output written")
 

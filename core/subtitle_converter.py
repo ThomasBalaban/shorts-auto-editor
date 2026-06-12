@@ -16,10 +16,14 @@ def format_time(seconds):
     seconds = seconds % 60
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
 
-def convert_to_srt(input_text, output_file, video_file, log, is_mic_track=False):
+def convert_to_srt(input_text, output_file, video_file, log, is_mic_track=False,
+                   mic_margin_v=None):
     """
     Converts transcription to either an animated ASS file (for mic track)
     or a standard SRT file (for other tracks).
+
+    ``mic_margin_v`` overrides the vertical position of the animated mic
+    subtitles (distance from the bottom in the 1920-tall frame).
     """
     if is_mic_track:
         # --- Microphone Track: Generate Animated ASS ---
@@ -93,7 +97,7 @@ def convert_to_srt(input_text, output_file, video_file, log, is_mic_track=False)
         ass_header = renderer.create_ass_header()
         ass_header = ass_header.replace(
             "[V4+ Styles]",
-            f"[V4+ Styles]\n{AnimatedMicrophoneStyle.get_ass_style_string()}"
+            f"[V4+ Styles]\n{AnimatedMicrophoneStyle.get_ass_style_string(mic_margin_v)}"
         )
 
         ass_content = [ass_header]

@@ -1,11 +1,23 @@
 import os
 import subprocess
-from utils.subtitle_styles import TRACK2_STYLE, TRACK3_STYLE, OnomatopoeiaStyle
+from utils.subtitle_styles import (
+    TRACK2_STYLE, TRACK3_STYLE, OnomatopoeiaStyle,
+    MicrophoneStyle, DesktopStyle,
+)
 
-def embed_subtitles(input_video, output_video, track2_srt, track3_srt, onomatopoeia_srt, onomatopoeia_events, log):
+def embed_subtitles(input_video, output_video, track2_srt, track3_srt, onomatopoeia_srt, onomatopoeia_events, log,
+                    mic_margin_v=None, game_margin_v=None):
     """
     Main subtitle embedding function - dynamically handles any combination of subtitle files.
+
+    ``mic_margin_v`` / ``game_margin_v`` override the vertical position of the
+    mic / game (desktop) SRT subtitles. (Animated mic subtitles are .ass and
+    carry their position in the file itself, set in convert_to_srt.)
     """
+    mic_style = (MicrophoneStyle.get_style_string(mic_margin_v)
+                 if mic_margin_v is not None else TRACK2_STYLE)
+    desktop_style = (DesktopStyle.get_style_string(game_margin_v)
+                     if game_margin_v is not None else TRACK3_STYLE)
     # Check what subtitle files we have
     sub_files = {
         "mic": track2_srt,
@@ -62,9 +74,9 @@ def embed_subtitles(input_video, output_video, track2_srt, track3_srt, onomatopo
             if os.name == 'nt':
                 path_fmt = path_fmt.replace(':', r'\\:')
             
-            style = TRACK3_STYLE # Default
+            style = desktop_style # Default (desktop/game track)
             if name == "mic":
-                style = TRACK2_STYLE
+                style = mic_style
             elif name == "onomatopoeia":
                 style = OnomatopoeiaStyle.get_simple_style()
 

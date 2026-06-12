@@ -583,6 +583,13 @@ class IterationOrchestrator:
         final_output_path: Optional[str] = None,
         camera_region: Optional[dict] = None,
         gameplay_region: Optional[dict] = None,
+        camera_mode: str = "vtuber",
+        game_subtitles_enabled: bool = True,
+        onomatopoeia_enabled: bool = True,
+        mic_track_index: str = "a:1",
+        game_track_index: str = "a:2",
+        mic_margin_v=None,
+        game_margin_v=None,
     ) -> Tuple[str, Dict[str, Any]]:
         """Run the iteration loop on one video.
 
@@ -624,6 +631,13 @@ class IterationOrchestrator:
                 pre_baked=pre_baked,
                 camera_region=camera_region,
                 gameplay_region=gameplay_region,
+                camera_mode=camera_mode,
+                game_subtitles_enabled=game_subtitles_enabled,
+                onomatopoeia_enabled=onomatopoeia_enabled,
+                mic_track_index=mic_track_index,
+                game_track_index=game_track_index,
+                mic_margin_v=mic_margin_v,
+                game_margin_v=game_margin_v,
             )
             if metadata is None:
                 self.log_func(f"❌ Iteration {iteration} returned no metadata; aborting loop.")

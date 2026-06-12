@@ -22,16 +22,18 @@ class MicrophoneStyle:
     MARGIN_V = 100  # Higher value = higher position from bottom
     MARGIN_L = 40  # Left margin
     MARGIN_R = 40  # Right margin
-    
+
     @classmethod
-    def get_style_string(cls):
-        """Generate the FFmpeg style string for subtitles"""
+    def get_style_string(cls, margin_v=None):
+        """Generate the FFmpeg style string for subtitles. ``margin_v`` overrides
+        the default vertical position (static-mode mic subtitles)."""
+        mv = cls.MARGIN_V if margin_v is None else int(margin_v)
         return (
             f"FontName={cls.FONT_NAME},FontSize={cls.FONT_SIZE},"
             f"PrimaryColour={cls.PRIMARY_COLOR},OutlineColour={cls.OUTLINE_COLOR},"
             f"BackColour={cls.BACKGROUND_COLOR},Bold={cls.BOLD},Italic={cls.ITALIC},"
             f"BorderStyle={cls.BORDER_STYLE},Outline={cls.OUTLINE},Shadow={cls.SHADOW},"
-            f"Alignment={cls.ALIGNMENT},MarginV={cls.MARGIN_V},MarginL={cls.MARGIN_L},MarginR={cls.MARGIN_R}"
+            f"Alignment={cls.ALIGNMENT},MarginV={mv},MarginL={cls.MARGIN_L},MarginR={cls.MARGIN_R}"
         )
 
 class AnimatedMicrophoneStyle:
@@ -54,13 +56,16 @@ class AnimatedMicrophoneStyle:
     ENCODING = 1
 
     @classmethod
-    def get_ass_style_string(cls):
-        """Generate the ASS style string."""
+    def get_ass_style_string(cls, margin_v=None):
+        """Generate the ASS style string. ``margin_v`` overrides the default
+        vertical position (distance from the bottom in a 1920-tall frame) so the
+        operator can drag where mic subtitles sit."""
+        mv = cls.MARGIN_V if margin_v is None else int(margin_v)
         return (
             f"Style: {cls.STYLE_NAME},{cls.FONT_NAME},{cls.FONT_SIZE},"
             f"{cls.PRIMARY_COLOR},&H00000000,{cls.OUTLINE_COLOR},{cls.BACKGROUND_COLOR},"
             f"{cls.BOLD},{cls.ITALIC},0,0,100,100,0,0,{cls.BORDER_STYLE},{cls.OUTLINE},"
-            f"{cls.SHADOW},{cls.ALIGNMENT},{cls.MARGIN_L},{cls.MARGIN_R},{cls.MARGIN_V},{cls.ENCODING}"
+            f"{cls.SHADOW},{cls.ALIGNMENT},{cls.MARGIN_L},{cls.MARGIN_R},{mv},{cls.ENCODING}"
         )
 
 
@@ -80,16 +85,19 @@ class DesktopStyle:
     MARGIN_V = 80  # Lower value = lower position (below mic track)
     MARGIN_L = 40  # Left margin
     MARGIN_R = 40  # Right margin
-    
+
     @classmethod
-    def get_style_string(cls):
-        """Generate the FFmpeg style string for subtitles"""
+    def get_style_string(cls, margin_v=None):
+        """Generate the FFmpeg style string for subtitles. ``margin_v`` overrides
+        the default vertical position so the operator can drag where game
+        subtitles sit."""
+        mv = cls.MARGIN_V if margin_v is None else int(margin_v)
         return (
             f"FontName={cls.FONT_NAME},FontSize={cls.FONT_SIZE},"
             f"PrimaryColour={cls.PRIMARY_COLOR},OutlineColour={cls.OUTLINE_COLOR},"
             f"BackColour={cls.BACKGROUND_COLOR},Bold={cls.BOLD},Italic={cls.ITALIC},"
             f"BorderStyle={cls.BORDER_STYLE},Outline={cls.OUTLINE},Shadow={cls.SHADOW},"
-            f"Alignment={cls.ALIGNMENT},MarginV={cls.MARGIN_V},MarginL={cls.MARGIN_L},MarginR={cls.MARGIN_R}"
+            f"Alignment={cls.ALIGNMENT},MarginV={mv},MarginL={cls.MARGIN_L},MarginR={cls.MARGIN_R}"
         )
 
 

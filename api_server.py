@@ -31,6 +31,12 @@ _settings: Dict[str, Any] = {
     "sync_offset": -0.15,
     "output_dir": os.path.join(os.path.expanduser("~"), "Desktop"),
     "enable_trimming": True,
+    # Processing toggles / inputs (global).
+    "camera_mode": "vtuber",          # "vtuber" | "facecam" | "none"
+    "game_subtitles_enabled": True,
+    "onomatopoeia_enabled": True,
+    "mic_track_index": "a:1",
+    "game_track_index": "a:2",
     # Layout presets for zoom focus. Edited from the hub's "Layout" tab and
     # persisted to hub_settings.json via the launcher. Empty → legacy focus.
     "region_presets": [],
@@ -72,22 +78,54 @@ def _save_settings() -> None:
 _load_settings()
 
 
+def _active_preset() -> dict:
+    """Return the active layout preset dict, or {} if none/​not found."""
+    try:
+        name = (_settings.get("active_preset") or "").strip()
+        if not name:
+            return {}
+        for p in (_settings.get("region_presets") or []):
+            if isinstance(p, dict) and p.get("name") == name:
+                return p
+    except Exception as e:
+        print(f"[settings] Could not resolve active preset: {e}", flush=True)
+    return {}
+
+
 def _resolve_regions() -> tuple:
     """Resolve the active layout preset into (camera_region, gameplay_region).
 
     Returns (None, None) when no preset is active or it can't be found, so the
     VideoEditor falls back to its legacy default focus. Never raises.
     """
+    p = _active_preset()
+    return p.get("camera"), p.get("gameplay")
+
+
+def _y_to_margin_v(y, default) -> int:
+    """Convert a normalized-from-top subtitle position (0=top, 1=bottom) into an
+    ASS MarginV (distance from the bottom of a 1920-tall frame)."""
+    if y is None:
+        return default
     try:
-        name = (_settings.get("active_preset") or "").strip()
-        if not name:
-            return None, None
-        for p in (_settings.get("region_presets") or []):
-            if isinstance(p, dict) and p.get("name") == name:
-                return p.get("camera"), p.get("gameplay")
-    except Exception as e:
-        print(f"[settings] Could not resolve regions: {e}", flush=True)
-    return None, None
+        return max(0, min(1920, round((1.0 - float(y)) * 1920)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _resolve_layout() -> dict:
+    """Resolve per-preset scene settings used by the pipeline: the mic/game
+    subtitle MarginV overrides. (camera_mode is a global setting.)"""
+    p = _active_preset()
+    return {
+        "mic_margin_v": _y_to_margin_v(p.get("mic_subtitle_y"), 640),
+        "game_margin_v": _y_to_margin_v(p.get("game_subtitle_y"), 80),
+    }
+
+
+def _camera_mode() -> str:
+    mode = _settings.get("camera_mode") or "vtuber"
+    return mode if mode in ("vtuber", "facecam", "none") else "vtuber"
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -132,6 +170,7 @@ def _processing_worker() -> None:
     # (while this API was already running) are picked up for this batch.
     _load_settings()
     camera_region, gameplay_region = _resolve_regions()
+    layout = _resolve_layout()
 
     queued_indices = [
         i for i, f in enumerate(_files) if f["status"] == "queued"
@@ -237,6 +276,13 @@ def _processing_worker() -> None:
                     final_output_path=entry["output_path"],
                     camera_region=camera_region,
                     gameplay_region=gameplay_region,
+                    camera_mode=_camera_mode(),
+                    game_subtitles_enabled=_settings["game_subtitles_enabled"],
+                    onomatopoeia_enabled=_settings["onomatopoeia_enabled"],
+                    mic_track_index=_settings["mic_track_index"],
+                    game_track_index=_settings["game_track_index"],
+                    mic_margin_v=layout["mic_margin_v"],
+                    game_margin_v=layout["game_margin_v"],
                 )
                 # Iteration-loop path writes its own per-video metadata file;
                 # do NOT add to batch_metadata so we don't double-write.
@@ -256,6 +302,13 @@ def _processing_worker() -> None:
                     enable_trimming=_settings["enable_trimming"],
                     camera_region=camera_region,
                     gameplay_region=gameplay_region,
+                    camera_mode=_camera_mode(),
+                    game_subtitles_enabled=_settings["game_subtitles_enabled"],
+                    onomatopoeia_enabled=_settings["onomatopoeia_enabled"],
+                    mic_track_index=_settings["mic_track_index"],
+                    game_track_index=_settings["game_track_index"],
+                    mic_margin_v=layout["mic_margin_v"],
+                    game_margin_v=layout["game_margin_v"],
                 )
                 with _lock:
                     _files[idx]["output_path"] = (
@@ -321,6 +374,11 @@ class SubtitlerSettings(BaseModel):
     sync_offset: float
     output_dir: str
     enable_trimming: bool
+    camera_mode: str = "vtuber"
+    game_subtitles_enabled: bool = True
+    onomatopoeia_enabled: bool = True
+    mic_track_index: str = "a:1"
+    game_track_index: str = "a:2"
 
 
 class FilesPayload(BaseModel):
@@ -479,6 +537,11 @@ def post_settings(s: SubtitlerSettings):
         "sync_offset": round(s.sync_offset, 3),
         "output_dir": s.output_dir,
         "enable_trimming": s.enable_trimming,
+        "camera_mode": s.camera_mode if s.camera_mode in ("vtuber", "facecam", "none") else "vtuber",
+        "game_subtitles_enabled": s.game_subtitles_enabled,
+        "onomatopoeia_enabled": s.onomatopoeia_enabled,
+        "mic_track_index": s.mic_track_index,
+        "game_track_index": s.game_track_index,
     })
     if dir_changed:
         os.makedirs(s.output_dir, exist_ok=True)
