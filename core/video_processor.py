@@ -362,6 +362,7 @@ class VideoProcessor:
                     mic_transcription=mic_transcriptions_raw,
                     audio_events=events,
                     video_analysis_map=video_map,
+                    camera_region=camera_region,
                 )
 
             # ── PHASE 5: Apply zoom edits ──────────────────────────────

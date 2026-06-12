@@ -1,17 +1,48 @@
 # ai_director/master_director.py
-from typing import List, Dict, Tuple
-from ai_director.data_models import TimelineEvent, DirectorTask
-from ai_director.specialists import SpecialistManager
-import numpy as np
+"""
+MasterDirector — content-driven zoom selection.
+
+Replaces the old fixed 6s grid + per-window specialists + editorial conflict
+resolver. The new flow:
+
+    signals  →  candidates  →  selection  →  TimelineEvents
+
+  1. Extract independent, real-timestamped signals (mic utterances + energy,
+     game-audio energy, hybrid-sampled vision beats).
+  2. Each signal proposes scored ZoomCandidates on one 0–1 scale.
+  3. Select a non-overlapping subset above a quality threshold (greedy by
+     score). Cadence emerges from the content — eventful clips get more zooms,
+     calm clips fewer. Nothing is placed on a grid.
+
+The emitted TimelineEvent action vocabulary is unchanged, so VideoEditor is
+untouched.
+"""
+
+from typing import Callable, Dict, List, Optional
+
+from ai_director.data_models import TimelineEvent, ZoomCandidate
+from ai_director.specialists import ReactionClassifier
+from ai_director import signals as sig
+from ai_director.candidates import (
+    generate_cam_candidates,
+    generate_game_candidates,
+)
+
+# Only candidates scoring at/above this survive — the quality gate that keeps
+# cadence content-driven rather than constant.
+SCORE_THRESHOLD = 0.55
+# Minimum spacing between two kept zooms' peaks, on top of no-window-overlap.
+REFRACTORY_S = 1.5
+
 
 class MasterDirector:
-    """Orchestrates the AI-driven video editing process."""
+    """Orchestrates content-driven zoom decisions."""
 
     def __init__(self, log_func=None, detailed_logs=False):
         self.log_func = log_func or print
-        self.specialists = SpecialistManager(log_func=self.log_func)
         self.detailed_logs = detailed_logs
-        self.log_func("👑 AI Master Director initialized.")
+        self.classifier = ReactionClassifier(log_func=self.log_func)
+        self.log_func("👑 AI Master Director initialized (content-driven).")
 
     def analyze_video_and_create_timeline(
         self,
@@ -19,138 +50,131 @@ class MasterDirector:
         video_duration: float,
         mic_transcription: List[str],
         audio_events: List[Dict],
-        video_analysis_map: Dict[float, Dict]
+        video_analysis_map: Dict[float, Dict],  # legacy arg, no longer required
+        camera_region: Optional[Dict] = None,   # normalized {x,y,w,h} for gaze
     ) -> List[TimelineEvent]:
-        self.log_func("--- AI Director: Starting Full Analysis ---")
-        tasks = self._event_driven_analysis(video_duration, audio_events)
-        self.log_func(f"Generated {len(tasks)} tasks for specialists.")
-        full_transcript_text = " ".join([line.split(":", 1)[1] for line in mic_transcription if ":" in line])
-        responses = [self.specialists.dispatch_task(task, full_transcript_text, video_path, video_analysis_map) for task in tasks]
-        # Store full response objects for later analysis
-        timeline = self._resolve_conflicts_and_build_timeline(responses, tasks)
-        self.log_func(f"✅ AI Director analysis complete. Generated {len(timeline)} timeline events.")
-        return timeline
+        self.log_func("--- AI Director: Starting Content Analysis ---")
 
-    def _event_driven_analysis(
-        self,
-        video_duration: float,
-        audio_events: List[Dict]
-    ) -> List[DirectorTask]:
-        tasks = []
-        window_size = 12.0
-        step_size = 6.0
-        for start_time in np.arange(0, video_duration - window_size, step_size):
-            tasks.append(DirectorTask(task_type="analyze_text_content", time_range=(start_time, start_time + window_size), priority="medium", context={"video_duration": video_duration}))
-        for event in audio_events:
-            if event.get('tier') == 'major' or event.get('energy', 0) > 0.7:
-                event_time_range = (event['start_time'], event['end_time'])
-                tasks.append(DirectorTask(task_type="analyze_audio_event", time_range=event_time_range, priority="high", context=event))
-                tasks.append(DirectorTask(task_type="analyze_visual_context", time_range=event_time_range, priority="high", context=event))
-        return tasks
+        # One vision analyzer shared by the beat pass and the gaze gate.
+        analyzer = self._make_analyzer()
 
-    def _resolve_conflicts_and_build_timeline(
-        self,
-        responses: List,
-        tasks: List[DirectorTask]
-    ) -> List[TimelineEvent]:
-        # Pair events with their original responses and tasks for full context
-        events_with_context = []
-        if self.detailed_logs: self.log_func("\n--- AI Director: Specialist Responses ---")
-        for response, task in zip(responses, tasks):
-            if response.result != "no_significant_event" and response.recommended_action:
-                duration = 2.0 if response.recommended_action == "zoom_to_cam_reaction" else 3.0
-                event = TimelineEvent(timestamp=task.time_range[0], action=response.recommended_action, duration=duration, reason=response.result, confidence=response.confidence, source_task_id=response.task_id)
-                events_with_context.append({"event": event, "response": response})
-                if self.detailed_logs: self.log_func(f"  - Event Generated: {event.action} at {event.timestamp:.2f}s (Duration: {event.duration:.1f}s, Reason: {event.reason})")
-        
-        if not events_with_context:
-            if self.detailed_logs: self.log_func("  - No significant events generated by specialists.")
+        # ── 1. Signals ────────────────────────────────────────────────────────
+        utterances = sig.parse_utterances(mic_transcription)
+        mic_env = sig.energy_envelope(
+            video_path, "a:1", self.log_func)        # mic / player voice
+        game_env = sig.energy_envelope(
+            video_path, "a:2", self.log_func)        # desktop / game audio
+        beats = sig.vision_beats(
+            video_path, video_duration, analyzer=analyzer, log_func=self.log_func)
+        self.log_func(
+            f"   signals: {len(utterances)} utterances, "
+            f"mic_env={'ok' if mic_env.available else 'none'}, "
+            f"game_env={'ok' if game_env.available else 'none'}, "
+            f"{len(beats)} vision beats")
+
+        # ── 2. Candidates ─────────────────────────────────────────────────────
+        candidates: List[ZoomCandidate] = []
+        cam = generate_cam_candidates(
+            utterances, mic_env, self.classifier, self.log_func)
+        self._apply_gaze_gate(cam, video_path, camera_region, analyzer)
+        candidates += cam
+        candidates += generate_game_candidates(
+            beats, game_env, audio_events, self.log_func)
+
+        if not candidates:
+            self.log_func("   No candidates generated — no zooms.")
             return []
 
-        priority_map = {"dramatic_moment_visual": 3, "wild_content_detected": 2, "dramatic_moment_detected": 1, "awkward_content_detected": 1}
-        # Sort by timestamp, then by priority
-        events_with_context.sort(key=lambda x: (x['event'].timestamp, -priority_map.get(x['event'].reason, 0)))
+        # ── 3. Selection ──────────────────────────────────────────────────────
+        timeline = self._select(candidates)
+        self.log_func(
+            f"✅ AI Director complete. {len(timeline)} zooms from "
+            f"{len(candidates)} candidates.")
+        return timeline
 
-        if self.detailed_logs: self.log_func("\n--- AI Director: Conflict Resolution & Sequencing ---")
-        
-        final_timeline_with_context = []
-        i = 0
-        while i < len(events_with_context):
-            current_item = events_with_context[i]
-            current_event = current_item["event"]
+    # ── Vision analyzer + camera-gaze gate ────────────────────────────────────
+    def _make_analyzer(self):
+        """Create the shared Gemini vision analyzer, or None if unavailable."""
+        try:
+            from llm.gemini_vision_analyzer import GeminiVisionAnalyzer
+            return GeminiVisionAnalyzer(log_func=self.log_func)
+        except Exception as e:
+            self.log_func(f"   ⚠ vision analyzer unavailable: {e}")
+            return None
 
-            # Action > Reaction Sequencing (remains the same)
-            if (current_event.reason == "dramatic_moment_visual" and (i + 1) < len(events_with_context)):
-                next_item = events_with_context[i+1]
-                next_event = next_item["event"]
-                if (next_event.action == "zoom_to_cam_reaction" and 
-                    next_event.timestamp > current_event.timestamp and 
-                    next_event.timestamp < current_event.timestamp + current_event.duration):
-                    
-                    if self.detailed_logs: self.log_func(f"  - Sequence Detected at {current_event.timestamp:.2f}s:")
-                    current_event.duration = next_event.timestamp - current_event.timestamp
-                    final_timeline_with_context.append(current_item)
-                    final_timeline_with_context.append(next_item)
-                    if self.detailed_logs: self.log_func(f"    - Resolution: Creating 'Action > Reaction' sequence.")
-                    i += 2
-                    continue
+    def _apply_gaze_gate(
+        self,
+        cam_candidates: List[ZoomCandidate],
+        video_path: str,
+        camera_region: Optional[Dict],
+        analyzer,
+    ) -> None:
+        """Penalize cam reactions whose avatar looks bugged (looking down/away
+        or face not visible) in the camera region, so a game zoom or no-zoom
+        wins the slot. Only checks candidates that could actually be selected
+        (≥ threshold) to keep the extra vision calls minimal. Unknown/failed
+        checks apply no penalty."""
+        if not camera_region or analyzer is None:
+            return
+        for c in cam_candidates:
+            if c.kind != "cam_reaction" or c.score < SCORE_THRESHOLD:
+                continue
+            q = analyzer.analyze_camera_gaze(video_path, c.t_peak, camera_region)
+            if q is None or q >= 1.0:
+                continue
+            old = c.score
+            c.score = round(c.score * (0.4 + 0.6 * q), 3)
+            c.reason = f"{c.reason}|gaze={q:.2f}"
+            self.log_func(
+                f"   👁 gaze penalty: cam @ {c.t_peak:.2f}s "
+                f"{old:.2f}→{c.score:.2f} (eyes q={q:.2f})")
 
-            # If no timeline yet, or no overlap
-            if not final_timeline_with_context or current_event.timestamp >= final_timeline_with_context[-1]["event"].timestamp + final_timeline_with_context[-1]["event"].duration:
-                if self.detailed_logs: self.log_func(f"  - No Conflict: Keeping {current_event.action} at {current_event.timestamp:.2f}s.")
-                final_timeline_with_context.append(current_item)
-            else:
-                # CONFLICT DETECTED
-                last_item = final_timeline_with_context[-1]
-                last_event = last_item["event"]
+    # ── Selection: greedy non-max suppression by score ────────────────────────
+    def _select(self, candidates: List[ZoomCandidate]) -> List[TimelineEvent]:
+        if self.detailed_logs:
+            self.log_func("\n--- AI Director: Candidate Selection ---")
 
+        # Highest score first; ties broken by earlier time for determinism.
+        ranked = sorted(candidates, key=lambda c: (-c.score, c.t_peak))
+        kept: List[ZoomCandidate] = []
+
+        for c in ranked:
+            if c.score < SCORE_THRESHOLD:
                 if self.detailed_logs:
-                    self.log_func(f"  - Conflict Detected:")
-                    self.log_func(f"    - Existing: {last_event.action} at {last_event.timestamp:.2f}s (Reason: {last_event.reason})")
-                    self.log_func(f"    - New:      {current_event.action} at {current_event.timestamp:.2f}s (Reason: {current_event.reason})")
+                    self.log_func(
+                        f"  - drop  {c.kind:13s} @ {c.t_peak:6.2f}s "
+                        f"score={c.score:.2f} ({c.reason}) — below threshold")
+                continue
+            clash = self._overlaps(c, kept)
+            if clash is not None:
+                if self.detailed_logs:
+                    self.log_func(
+                        f"  - drop  {c.kind:13s} @ {c.t_peak:6.2f}s "
+                        f"score={c.score:.2f} ({c.reason}) — clashes with "
+                        f"{clash.kind} @ {clash.t_peak:.2f}s")
+                continue
+            kept.append(c)
+            if self.detailed_logs:
+                cap = f" “{c.caption[:48]}”" if c.caption else ""
+                self.log_func(
+                    f"  - KEEP  {c.kind:13s} @ {c.t_peak:6.2f}s "
+                    f"score={c.score:.2f} ({c.reason}){cap}")
 
-                # --- NEW EDITORIAL DECISION LOGIC ---
-                # Identify which is the game event and which is the player event
-                game_event_item = None
-                player_event_item = None
-                if "dramatic_moment" in last_event.reason: game_event_item = last_item
-                if "dramatic_moment" in current_event.reason: game_event_item = current_item
-                if "wild_content" in last_event.reason: player_event_item = last_item
-                if "wild_content" in current_event.reason: player_event_item = current_item
+        kept.sort(key=lambda c: c.t_peak)
+        return [c.to_timeline_event() for c in kept]
 
-                if game_event_item and player_event_item:
-                    # Call the Editorial Specialist
-                    decision = self.specialists.decide_editorial_priority(
-                        game_event_details=game_event_item["response"].details,
-                        player_event_details=player_event_item["response"].details
-                    )
-                    if decision == "game":
-                        if self.detailed_logs: self.log_func(f"    - Resolution: Prioritizing 'game' event based on editorial decision.")
-                        # Replace if the new event is the chosen game event
-                        if current_item == game_event_item:
-                            final_timeline_with_context[-1] = current_item
-                    elif decision == "player":
-                        if self.detailed_logs: self.log_func(f"    - Resolution: Prioritizing 'player' event based on editorial decision.")
-                        # Replace if the new event is the chosen player event
-                        if current_item == player_event_item:
-                            final_timeline_with_context[-1] = current_item
-                    else:
-                        # Fallback to old priority system if specialist fails
-                        if self.detailed_logs: self.log_func(f"    - Resolution: Editorial specialist failed, falling back to priority scores.")
-                        current_priority = priority_map.get(current_event.reason, 0)
-                        last_priority = priority_map.get(last_event.reason, 0)
-                        if current_priority > last_priority:
-                            final_timeline_with_context[-1] = current_item
-                else:
-                    # Standard priority conflict (e.g., two game events)
-                    current_priority = priority_map.get(current_event.reason, 0)
-                    last_priority = priority_map.get(last_event.reason, 0)
-                    if current_priority > last_priority:
-                        if self.detailed_logs: self.log_func(f"    - Resolution: Replacing with new event (Higher Priority).")
-                        final_timeline_with_context[-1] = current_item
-                    else:
-                        if self.detailed_logs: self.log_func(f"    - Resolution: Keeping existing event (Higher or Equal Priority).")
-            i += 1
-                
-        # Extract just the event objects for the final timeline
-        return [item["event"] for item in final_timeline_with_context]
+    @staticmethod
+    def _overlaps(
+        c: ZoomCandidate, kept: List[ZoomCandidate]
+    ) -> Optional[ZoomCandidate]:
+        """Return a kept candidate that conflicts with `c`, else None. Two zooms
+        conflict if their on-screen windows overlap or their peaks fall within
+        the refractory gap."""
+        c0, c1 = c.t_peak, c.t_peak + c.duration
+        for k in kept:
+            k0, k1 = k.t_peak, k.t_peak + k.duration
+            if c0 < k1 and k0 < c1:
+                return k
+            if abs(c.t_peak - k.t_peak) < REFRACTORY_S:
+                return k
+        return None
