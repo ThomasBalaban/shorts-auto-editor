@@ -652,6 +652,19 @@ class IterationOrchestrator:
                 # No prior either — bail out without cleanup, nothing to ship.
                 return final_path, {}
 
+            # No-dialogue skip: the editor decided this clip isn't worth
+            # editing (no operator dialogue). Don't iterate, don't ship, don't
+            # rename — just record the skip so there's a trace.
+            if metadata.get("status") == "skipped_no_dialogue":
+                self.log_func(
+                    f"⏭️  Skipping '{base}' — no mic dialogue detected. "
+                    f"Not shipping, not iterating."
+                )
+                metadata.setdefault("file_info", {})
+                metadata["file_info"]["iteration"] = iteration
+                self._write_metadata(metadata_path, metadata)
+                return final_path, metadata
+
             # Patch iteration tracking + history into the metadata before write.
             metadata.setdefault("file_info", {})
             metadata["file_info"]["iteration"]      = iteration

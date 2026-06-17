@@ -22,6 +22,80 @@ from utils.timestamp_processor import (
 from title_generator import TitleGenerator
 
 
+def _mic_has_no_real_speech(mic_audio_path, log_func):
+    """Double-check an empty mic transcript against the raw mic audio.
+
+    Called only when the mic transcription came back with zero real
+    (non-hallucination) words. An empty transcript can mean two very
+    different things — the operator genuinely said nothing, OR a flaky
+    transcription / over-aggressive hallucination filter ate real speech —
+    so we cross-check against the actual audio before deciding to skip.
+
+    Returns:
+      True  → the mic is silent or contains no speech  → SAFE to skip.
+      False → the mic has clear speech-like energy      → do NOT skip
+              (don't drop a clip the operator may have talked over).
+      None  → couldn't analyze (no librosa / no file)   → do NOT skip
+              (never skip on an unverifiable empty transcript).
+    """
+    try:
+        import numpy as np
+        from utils.hallucination_filter import (
+            LIBROSA_AVAILABLE,
+            _load_audio_segment,
+            _speech_likelihood,
+        )
+    except Exception:
+        return None
+
+    if not LIBROSA_AVAILABLE or not mic_audio_path or not os.path.exists(mic_audio_path):
+        return None
+
+    # Load the whole mic track (16 kHz mono WAV — small).
+    audio = _load_audio_segment(mic_audio_path, 0.0, 36000.0)
+    if audio is None or len(audio) == 0:
+        return True  # no audio at all → no speech
+
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+    if rms < 0.01:
+        log_func(f"   [no-dialogue check] mic RMS {rms:.4f} < 0.01 → silent")
+        return True
+
+    # There IS energy on the mic — is it speech, or just bleed/noise?
+    speech = _speech_likelihood(audio)
+    log_func(
+        f"   [no-dialogue check] mic RMS {rms:.4f}, "
+        f"speech_likelihood {speech:.2f}"
+    )
+    if speech >= 0.35:
+        return False  # sounds like speech → don't trust the empty transcript
+    return True       # energy present but not speech-like → skip
+
+
+def _no_dialogue_skip_metadata(input_file, output_file):
+    """Minimal metadata record for a clip skipped for having no dialogue.
+
+    Carries status="skipped_no_dialogue" so callers don't ship/upload it and
+    the operator has a trace of why nothing was produced. No output file is
+    written for a skipped clip.
+    """
+    return {
+        "file_info": {
+            "original_filename": os.path.basename(input_file),
+            "output_filename": os.path.basename(output_file),
+            "processed_at": datetime.datetime.now().isoformat(),
+            "iteration": 1,
+            "max_iterations": 3,
+            "iteration_history": [],
+        },
+        "status": "skipped_no_dialogue",
+        "skip_reason": (
+            "No mic dialogue detected (verified against the mic audio); "
+            "clip not edited."
+        ),
+    }
+
+
 class VideoProcessor:
     """
     Full per-video processing pipeline.
@@ -113,14 +187,50 @@ class VideoProcessor:
                     "large", "cpu", mic_audio_path, True, log_func,
                     "English", "Track 2 (Mic)",
                 )
-                try:
-                    os.remove(mic_audio_path)
-                except Exception:
-                    pass
                 log_func(
                     f"✅ Mic transcription complete: "
                     f"{len(mic_transcriptions_raw)} words"
                 )
+
+                # ── No-dialogue gate (double-checked) ─────────────────
+                # If the operator never spoke (no real mic words survived
+                # the hallucination filter), this clip isn't worth editing
+                # into a short. But an empty transcript can also be a flaky
+                # pass, so we verify against the raw mic audio first and only
+                # skip when the mic is genuinely silent/non-speech. The mic
+                # WAV must still exist for that check, so deletion happens
+                # after it. (Skipped on the replay path — already decided.)
+                if pre_baked is None and not mic_transcriptions_raw:
+                    verdict = _mic_has_no_real_speech(mic_audio_path, log_func)
+                    try:
+                        os.remove(mic_audio_path)
+                    except Exception:
+                        pass
+                    if verdict is True:
+                        log_func(
+                            "⏭️  No mic dialogue detected (double-checked "
+                            "against audio) — skipping edit for this clip."
+                        )
+                        return (
+                            output_file, None,
+                            _no_dialogue_skip_metadata(input_file, output_file),
+                        )
+                    if verdict is False:
+                        log_func(
+                            "   ⚠ Mic transcript empty but the audio sounds "
+                            "like speech — editing anyway (won't drop a clip "
+                            "you may have talked over)."
+                        )
+                    else:
+                        log_func(
+                            "   ⚠ Couldn't verify mic audio — editing anyway "
+                            "(never skip on an unverifiable empty transcript)."
+                        )
+                else:
+                    try:
+                        os.remove(mic_audio_path)
+                    except Exception:
+                        pass
             else:
                 log_func("⚠️ Mic audio extraction failed")
 

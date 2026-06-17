@@ -289,7 +289,10 @@ def _processing_worker() -> None:
                 with _lock:
                     _files[idx]["output_path"] = (
                         final_path or entry["output_path"])
-                    _files[idx]["status"] = "done"
+                    _files[idx]["status"] = (
+                        "skipped"
+                        if (meta or {}).get("status") == "skipped_no_dialogue"
+                        else "done")
                     _files[idx]["title"] = (meta or {}).get("title", "") or ""
             else:
                 final_path, _title, meta = VideoProcessor.process_single_video(
@@ -310,17 +313,22 @@ def _processing_worker() -> None:
                     mic_margin_v=layout["mic_margin_v"],
                     game_margin_v=layout["game_margin_v"],
                 )
+                skipped = (meta or {}).get("status") == "skipped_no_dialogue"
                 with _lock:
                     _files[idx]["output_path"] = (
                         final_path or entry["output_path"])
-                    _files[idx]["status"] = "done"
+                    _files[idx]["status"] = "skipped" if skipped else "done"
                     _files[idx]["title"] = (meta or {}).get("title", "") or ""
                 if meta:
                     batch_metadata.append(meta)
-            _log(
-                f"✅ Done: "
-                f"{os.path.basename(_files[idx]['output_path'])}"
-            )
+            if (meta or {}).get("status") == "skipped_no_dialogue":
+                _log(f"⏭️  Skipped (no dialogue): "
+                     f"{os.path.basename(entry['input_path'])}")
+            else:
+                _log(
+                    f"✅ Done: "
+                    f"{os.path.basename(_files[idx]['output_path'])}"
+                )
 
         except Exception as e:
             import traceback

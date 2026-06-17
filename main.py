@@ -379,11 +379,18 @@ class DualSubtitleApp:
                     self.output_files[i] = final_path
 
                     input_name = os.path.basename(input_file)
-                    output_name = os.path.basename(final_path)
-                    self.log("\n" + "*" * 60)
-                    self.log(
-                        f"SUCCESS: '{input_name}' -> '{output_name}'")
-                    self.log("*" * 60 + "\n")
+                    if (single_metadata or {}).get("status") == "skipped_no_dialogue":
+                        self.log("\n" + "*" * 60)
+                        self.log(
+                            f"SKIPPED (no dialogue): '{input_name}' — "
+                            f"clip not edited.")
+                        self.log("*" * 60 + "\n")
+                    else:
+                        output_name = os.path.basename(final_path)
+                        self.log("\n" + "*" * 60)
+                        self.log(
+                            f"SUCCESS: '{input_name}' -> '{output_name}'")
+                        self.log("*" * 60 + "\n")
 
                 except Exception as file_error:
                     self.log(
