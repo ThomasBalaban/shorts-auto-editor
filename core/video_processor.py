@@ -147,6 +147,18 @@ class VideoProcessor:
         decision_timeline = None
         events = []
         video_metadata = None
+        # Honest-record flags (MISSION Phase 1, minimal pass): every phase
+        # records whether it actually ran, so the metadata can never claim
+        # edits that were not rendered. Consumed by the strategist and the
+        # hub queue; "raw_source_fallback" render_status means the shipped
+        # file is the UNEDITED source and must not be published as-is.
+        render_health = {
+            "trim_attempted": False,
+            "trim_applied": False,
+            "embed_status": "not_attempted",   # not_attempted | ok | failed
+            "render_status": "ok",             # ok | raw_source_fallback
+            "failure": None,
+        }
         DIALOGUE_TRIM_BUFFER = 0.8
 
         # Holders for cleanup
@@ -385,7 +397,9 @@ class VideoProcessor:
                     output_video=trimmed_video_path,
                     segments_to_keep=extended_trim_segments,
                 )
+                render_health["trim_attempted"] = True
                 if trim_success and os.path.exists(trimmed_video_path):
+                    render_health["trim_applied"] = True
                     video_to_process = trimmed_video_path
                     trimmed_dur = get_video_duration(trimmed_video_path, log_func)
                     log_func(
@@ -393,7 +407,10 @@ class VideoProcessor:
                         f"(from {source_video_duration:.1f}s source)"
                     )
                 else:
-                    log_func("⚠️ Trim execution failed — falling back to source")
+                    log_func("🚨 TRIM EXECUTION FAILED — continuing with the "
+                             "UNTRIMMED source. Metadata records "
+                             "trim_applied=false; trim segments below were "
+                             "NOT rendered.")
                     trimmed_video_path = None
 
             video_duration = get_video_duration(video_to_process, log_func)
@@ -538,6 +555,9 @@ class VideoProcessor:
 
             # ── PHASE 6: Embed Subtitles → final output ────────────────
             log_func("\n--- PHASE 6: Embedding All Subtitles ---")
+            # Pessimistic flag: stays "failed" if embed_subtitles raises and
+            # control jumps to the catch-all below.
+            render_health["embed_status"] = "failed"
             embed_subtitles(
                 input_video=video_to_subtitle,
                 output_video=output_file,
@@ -549,6 +569,7 @@ class VideoProcessor:
                 mic_margin_v=mic_margin_v,
                 game_margin_v=game_margin_v,
             )
+            render_health["embed_status"] = "ok"
             log_func("✅ Subtitles embedded — final output written")
 
             # ── PHASE 7: Title generation + metadata ──────────────────
@@ -617,6 +638,7 @@ class VideoProcessor:
                     "iteration_history": [],
                 },
                 "editorial_decisions": editorial_decisions,
+                "render_health": render_health,
             }
 
             if pre_baked is not None and pre_baked.title_metadata:
@@ -656,8 +678,27 @@ class VideoProcessor:
             log_func(f"FATAL ERROR in VideoProcessor: {e}")
             import traceback
             log_func(f"Traceback: {traceback.format_exc()}")
+            render_health["failure"] = str(e)
             if not os.path.exists(output_file) and os.path.exists(input_file):
                 shutil.copy2(input_file, output_file)
+                render_health["render_status"] = "raw_source_fallback"
+                log_func("🚨🚨🚨 CATASTROPHIC FALLBACK: the pipeline failed "
+                         "and the RAW UNEDITED SOURCE was copied to the "
+                         "output path. Do NOT publish this file. "
+                         "(render_status=raw_source_fallback)")
+            # Make sure the failure is recorded even when the crash happened
+            # before metadata assembly — an honest stub beats silence.
+            if video_metadata is None:
+                video_metadata = {
+                    "file_info": {
+                        "original_filename": os.path.basename(input_file),
+                        "output_filename": os.path.basename(output_file),
+                        "processed_at": datetime.datetime.now().isoformat(),
+                    },
+                    "render_health": render_health,
+                }
+            else:
+                video_metadata["render_health"] = render_health
         finally:
             log_func("\n--- Cleaning up temporary files ---")
             for p in (

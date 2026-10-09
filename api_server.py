@@ -288,13 +288,20 @@ def _processing_worker() -> None:
                 )
                 # Iteration-loop path writes its own per-video metadata file;
                 # do NOT add to batch_metadata so we don't double-write.
+                rh = (meta or {}).get("render_health") or {}
                 with _lock:
                     _files[idx]["output_path"] = (
                         final_path or entry["output_path"])
-                    _files[idx]["status"] = (
-                        "skipped"
-                        if (meta or {}).get("status") == "skipped_no_dialogue"
-                        else "done")
+                    if rh.get("render_status") == "raw_source_fallback":
+                        _files[idx]["status"] = "error"
+                        _files[idx]["error"] = (
+                            "RAW SOURCE SHIPPED — pipeline failed, output is "
+                            "the unedited recording: " + str(rh.get("failure")))
+                    else:
+                        _files[idx]["status"] = (
+                            "skipped"
+                            if (meta or {}).get("status") == "skipped_no_dialogue"
+                            else "done")
                     _files[idx]["title"] = (meta or {}).get("title", "") or ""
             else:
                 final_path, _title, meta = VideoProcessor.process_single_video(
@@ -317,10 +324,17 @@ def _processing_worker() -> None:
                     game_margin_v=layout["game_margin_v"],
                 )
                 skipped = (meta or {}).get("status") == "skipped_no_dialogue"
+                rh = (meta or {}).get("render_health") or {}
                 with _lock:
                     _files[idx]["output_path"] = (
                         final_path or entry["output_path"])
-                    _files[idx]["status"] = "skipped" if skipped else "done"
+                    if rh.get("render_status") == "raw_source_fallback":
+                        _files[idx]["status"] = "error"
+                        _files[idx]["error"] = (
+                            "RAW SOURCE SHIPPED — pipeline failed, output is "
+                            "the unedited recording: " + str(rh.get("failure")))
+                    else:
+                        _files[idx]["status"] = "skipped" if skipped else "done"
                     _files[idx]["title"] = (meta or {}).get("title", "") or ""
                 if meta:
                     batch_metadata.append(meta)
