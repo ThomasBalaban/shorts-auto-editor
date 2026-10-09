@@ -13,6 +13,7 @@ Strict no-fallback policy (Phase 1.3 of gameplan.md):
 import datetime
 import json
 import re
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 
 from google.genai import types
@@ -52,6 +53,68 @@ def _banned_match(title: str) -> Optional[str]:
         if m:
             return m.group(0)
     return None
+
+
+# Gemini occasionally encodes a supplementary-plane emoji as a MALFORMED
+# escape behind a ``\u`` prefix, in one of two forms seen in the wild:
+#   • decimal codepoint — 💀 (U+1F480, decimal 128128) → "ኁ28"
+#   • 5–6 hex codepoint — 🤣 (U+1F923)               → "ᾒ3"
+# Both are still *valid* JSON because ``\u`` consumes exactly four hex
+# digits, so ``json.loads`` silently mis-decodes them into garbage:
+# "ኁ28" → "ኁ28" (U+1281 + "28"), "ᾒ3" → "ᾒ3" (U+1F92 + "3").
+# The mangled lead char lands in a low BMP block, so it slips under any
+# "strip high codepoints" filter. We repair these BEFORE parsing.
+_MALFORMED_SUPPLEMENTARY_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{5,6})")
+
+# Emoji / pictograph planes. Guarding to this range (rather than the whole
+# supplementary space) keeps the repair from misfiring on a legitimate
+# four-hex escape that happens to be followed by a digit — e.g. "—" + "1"
+# ("—1") interprets as 5 hex digits but lands in CJK, outside this range, so
+# it is left untouched.
+_EMOJI_LO, _EMOJI_HI = 0x1F000, 0x1FAFF
+
+
+def _repair_malformed_unicode_escapes(raw: str) -> str:
+    """Rewrite a ``\\u`` followed by 5–6 digits to the emoji it encodes when
+    read as a hex *or* decimal codepoint landing in the emoji planes, so the
+    intended emoji survives ``json.loads`` intact. Genuine four-hex escapes
+    and surrogate pairs (4 digits each) never match and are left alone.
+    """
+    def _sub(m: "re.Match[str]") -> str:
+        digits = m.group(1)
+        for base in (16, 10):  # hex first (ᾒ3), then decimal (ኁ28)
+            try:
+                cp = int(digits, base)
+            except ValueError:
+                continue
+            if _EMOJI_LO <= cp <= _EMOJI_HI:
+                return chr(cp)
+        return m.group(0)
+
+    return _MALFORMED_SUPPLEMENTARY_ESCAPE.sub(_sub, raw)
+
+
+def _sanitize_title(title: str) -> str:
+    """Defense-in-depth safety net for the chosen title.
+
+    Drops characters that cannot be intended in a title — control / format /
+    surrogate / private-use / unassigned code points, plus letters and marks
+    from non-Latin scripts (a corrupted escape can land on an isolated
+    Ethiopic/CJK letter that slips under any "high codepoint" filter).
+    Genuine emoji and symbols (category ``S*``), punctuation, digits, spaces,
+    and Latin text are preserved, so an intentional 💀 survives. Collapses
+    runs of whitespace.
+    """
+    kept = []
+    for ch in unicodedata.normalize("NFC", title):
+        cat = unicodedata.category(ch)
+        if cat[0] == "C":  # control, format, surrogate, private-use, unassigned
+            continue
+        if cat[0] in ("L", "M") and "LATIN" not in unicodedata.name(ch, ""):
+            continue  # letter/mark from an unrelated script — corruption artifact
+        kept.append(ch)
+    return " ".join("".join(kept).split())
+
 
 # JSON schema we ask Gemini to fill in. Captured here (not just inline in the
 # prompt) so structured-output validation happens server-side.
@@ -363,6 +426,16 @@ class TitleGenerator:
             self._log("[title] Gemini returned empty response")
             return None
 
+        # Repair malformed decimal emoji escapes (e.g. "ኁ28" → 💀)
+        # before parsing, so an intended emoji isn't silently mangled into
+        # garbage by json.loads. No-op when the response is already clean.
+        repaired = _repair_malformed_unicode_escapes(text)
+        if repaired != text:
+            self._log(
+                "[title] repaired malformed unicode escape(s) in Gemini "
+                "response (decimal emoji codepoint)")
+            text = repaired
+
         try:
             data = json.loads(text)
         except json.JSONDecodeError as e:
@@ -370,6 +443,16 @@ class TitleGenerator:
             return None
 
         chosen = (data.get("chosen_title") or "").strip()
+
+        # Safety net: strip any characters that can't belong in a title
+        # (corruption artifacts from unrelated scripts, control chars).
+        # Genuine emoji are preserved.
+        sanitized = _sanitize_title(chosen)
+        if sanitized != chosen:
+            self._log(
+                f"[title] sanitized title: \"{chosen}\" → \"{sanitized}\"")
+            chosen = sanitized
+
         if not chosen:
             self._log("[title] Gemini response missing chosen_title")
             return None
