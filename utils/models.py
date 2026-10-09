@@ -20,17 +20,19 @@ from utils.config import get_gemini_api_key
 
 # Flagship reasoning model — used only for trim analysis, where cut quality
 # is the most important factor in the whole pipeline.
+# (Newest pro as of 2026-10: `gemini-pro-latest` also resolves to this.)
 MODEL_PRO = "gemini-3.1-pro-preview"
 
 # High-speed, high-volume workhorse — used for per-event vision captions and
 # the AI Director's conflict-resolution calls.
-MODEL_FLASH = "gemini-3-flash-preview"
+MODEL_FLASH = "gemini-3.8-flash"
 
 
 # ──────────────────────────────────────────────────────────────────────────
 # Thinking levels  (see Gemini 3 docs)
 # ──────────────────────────────────────────────────────────────────────────
-#   minimal  — Flash only, near-zero thinking, max throughput
+#   minimal  — near-zero thinking, max throughput (NOT supported by
+#              gemini-3.8-flash — its floor is `low`)
 #   low      — simple instructions, chat
 #   medium   — balanced
 #   high     — deep reasoning, slower, more expensive
@@ -39,7 +41,7 @@ MODEL_FLASH = "gemini-3-flash-preview"
 
 THINKING_TRIM = types.ThinkingLevel.HIGH        # Pro — cut quality is paramount
 THINKING_DIRECTOR = types.ThinkingLevel.MEDIUM  # Flash — editorial priority
-THINKING_VISION = types.ThinkingLevel.MINIMAL   # Flash — simple captioning
+THINKING_VISION = types.ThinkingLevel.LOW       # Flash — simple captioning
 
 
 # ──────────────────────────────────────────────────────────────────────────
