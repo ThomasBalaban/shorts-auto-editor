@@ -487,19 +487,27 @@ before the fail, the confident brag right before the death) are pure gold
 and must be kept. Pure visual setup should be 5–15 seconds; longer only if
 there is extraordinary justification.
 
-STEP 3 — CUT AGGRESSIVELY
+STEP 3 — CUT AGGRESSIVELY, BUT PROTECT THE SILENCE BEAT
 Hard jump cuts between kept segments are fine and preferred for pacing.
 Delete:
-  - Any pause > 1.5s that isn't tension-building
+  - Any pause > 1.5s that isn't tension-building AND isn't the beat
+    directly before the punch point (see below)
   - Trailing commentary after the punchline lands (end within ~3s of peak)
   - Repetitive phrases and filler
   - Multiple setup attempts — keep only the best one
   - Dead-air exploration / walking / menus unless they serve the setup
   - Pre-roll and post-roll chatter
 
+THE SILENCE BEAT (channel-proven rule): keep 1–2 seconds of quiet
+immediately BEFORE the punch point whenever the source has it. The breath
+of silence before the payoff is what makes it land — on this channel it is
+one of the strongest breakout correlates. Never start a cut so close to the
+punch point that the tension beat is amputated.
+
 STEP 4 — VERIFY BEFORE OUTPUTTING
   - Does every kept second directly serve the punch or the minimum setup?
   - Is the punch point fully intact (not truncated)?
+  - Is there a 1–2s breathing beat before the punch (if the source allows)?
   - Would a stranger watching this clip with no prior context understand it?
   - If pacing still feels slow, cut more.
 
@@ -585,6 +593,25 @@ Based on the video and dialogue above, produce that JSON now.
                     f"   ✓ Keep {start:.1f}s–{end:.1f}s "
                     f"({end - start:.1f}s) — {reason}"
                 )
+
+            # Silence-beat guard: if the segment containing the punch point
+            # starts less than 1.5s before it, the pre-punch tension beat
+            # got amputated — extend the start to restore it (bounded by 0
+            # and by the previous kept segment's end).
+            PRE_PUNCH_BEAT = 1.5
+            if punch is not None:
+                for i, (s, e) in enumerate(segments):
+                    if s <= float(punch) <= e and float(punch) - s < PRE_PUNCH_BEAT:
+                        floor = segments[i - 1][1] if i > 0 else 0.0
+                        new_start = max(floor, float(punch) - PRE_PUNCH_BEAT, 0.0)
+                        if new_start < s:
+                            self.log_func(
+                                f"   🤫 Silence-beat guard: segment started "
+                                f"{float(punch) - s:.1f}s before the punch — "
+                                f"extending {s:.1f}s → {new_start:.1f}s"
+                            )
+                            segments[i] = (new_start, e)
+                        break
 
             cuts = data.get("cuts_made", [])
             if cuts:
