@@ -131,6 +131,7 @@ class VideoProcessor:
         camera_region=None,  # Optional[dict] normalized {x,y,w,h} for zoom focus
         gameplay_region=None,  # Optional[dict] normalized {x,y,w,h} for zoom focus
         camera_mode: str = "vtuber",          # "vtuber" | "facecam" | "none"
+        mic_subtitles_enabled: bool = True,
         game_subtitles_enabled: bool = True,
         onomatopoeia_enabled: bool = True,
         mic_track_index: str = "a:1",
@@ -420,7 +421,10 @@ class VideoProcessor:
                 )
 
             # Build subtitle SRT/ASS files now (in output time).
-            if mic_transcriptions_adjusted:
+            # Mic subtitles — operator-toggleable. Transcription above still
+            # ran regardless: the trimmer, title gen and no-dialogue skip
+            # gate all consume the transcript; only the overlay is skipped.
+            if mic_subtitles_enabled and mic_transcriptions_adjusted:
                 mic_subtitle_path_srt = os.path.join(
                     temp_dir, f"{os.path.basename(input_file)}_mic.srt")
                 convert_to_srt(
@@ -433,6 +437,8 @@ class VideoProcessor:
                 )
                 mic_subtitle_path = mic_subtitle_path_srt.replace(
                     ".srt", ".ass")
+            elif not mic_subtitles_enabled:
+                log_func("   Mic subtitles disabled — skipping mic track overlay")
 
             # Game/desktop subtitles — operator-toggleable.
             if game_subtitles_enabled and desktop_transcriptions_adjusted:

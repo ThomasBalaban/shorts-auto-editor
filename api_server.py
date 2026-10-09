@@ -33,6 +33,7 @@ _settings: Dict[str, Any] = {
     "enable_trimming": True,
     # Processing toggles / inputs (global).
     "camera_mode": "vtuber",          # "vtuber" | "facecam" | "none"
+    "mic_subtitles_enabled": True,
     "game_subtitles_enabled": True,
     "onomatopoeia_enabled": True,
     "mic_track_index": "a:1",
@@ -277,6 +278,7 @@ def _processing_worker() -> None:
                     camera_region=camera_region,
                     gameplay_region=gameplay_region,
                     camera_mode=_camera_mode(),
+                    mic_subtitles_enabled=_settings["mic_subtitles_enabled"],
                     game_subtitles_enabled=_settings["game_subtitles_enabled"],
                     onomatopoeia_enabled=_settings["onomatopoeia_enabled"],
                     mic_track_index=_settings["mic_track_index"],
@@ -306,6 +308,7 @@ def _processing_worker() -> None:
                     camera_region=camera_region,
                     gameplay_region=gameplay_region,
                     camera_mode=_camera_mode(),
+                    mic_subtitles_enabled=_settings["mic_subtitles_enabled"],
                     game_subtitles_enabled=_settings["game_subtitles_enabled"],
                     onomatopoeia_enabled=_settings["onomatopoeia_enabled"],
                     mic_track_index=_settings["mic_track_index"],
@@ -383,6 +386,7 @@ class SubtitlerSettings(BaseModel):
     output_dir: str
     enable_trimming: bool
     camera_mode: str = "vtuber"
+    mic_subtitles_enabled: bool = True
     game_subtitles_enabled: bool = True
     onomatopoeia_enabled: bool = True
     mic_track_index: str = "a:1"
@@ -546,6 +550,7 @@ def post_settings(s: SubtitlerSettings):
         "output_dir": s.output_dir,
         "enable_trimming": s.enable_trimming,
         "camera_mode": s.camera_mode if s.camera_mode in ("vtuber", "facecam", "none") else "vtuber",
+        "mic_subtitles_enabled": s.mic_subtitles_enabled,
         "game_subtitles_enabled": s.game_subtitles_enabled,
         "onomatopoeia_enabled": s.onomatopoeia_enabled,
         "mic_track_index": s.mic_track_index,
