@@ -38,6 +38,10 @@ _settings: Dict[str, Any] = {
     "onomatopoeia_enabled": True,
     "mic_track_index": "a:1",
     "game_track_index": "a:2",
+    # Experiment primitives (capability-gaps artifact, 2026-10) — both
+    # default OFF; flip per batch and judge on YouTube analytics.
+    "end_card_enabled": False,
+    "sparse_cuts_enabled": False,
     # Layout presets for zoom focus. Edited from the hub's "Layout" tab and
     # persisted to hub_settings.json via the launcher. Empty → legacy focus.
     "region_presets": [],
@@ -279,6 +283,8 @@ def _processing_worker() -> None:
                     gameplay_region=gameplay_region,
                     camera_mode=_camera_mode(),
                     mic_subtitles_enabled=_settings["mic_subtitles_enabled"],
+                    end_card_enabled=_settings["end_card_enabled"],
+                    sparse_cuts_enabled=_settings["sparse_cuts_enabled"],
                     game_subtitles_enabled=_settings["game_subtitles_enabled"],
                     onomatopoeia_enabled=_settings["onomatopoeia_enabled"],
                     mic_track_index=_settings["mic_track_index"],
@@ -316,6 +322,8 @@ def _processing_worker() -> None:
                     gameplay_region=gameplay_region,
                     camera_mode=_camera_mode(),
                     mic_subtitles_enabled=_settings["mic_subtitles_enabled"],
+                    end_card_enabled=_settings["end_card_enabled"],
+                    sparse_cuts_enabled=_settings["sparse_cuts_enabled"],
                     game_subtitles_enabled=_settings["game_subtitles_enabled"],
                     onomatopoeia_enabled=_settings["onomatopoeia_enabled"],
                     mic_track_index=_settings["mic_track_index"],
@@ -405,6 +413,8 @@ class SubtitlerSettings(BaseModel):
     onomatopoeia_enabled: bool = True
     mic_track_index: str = "a:1"
     game_track_index: str = "a:2"
+    end_card_enabled: bool = False
+    sparse_cuts_enabled: bool = False
 
 
 class FilesPayload(BaseModel):
@@ -569,6 +579,8 @@ def post_settings(s: SubtitlerSettings):
         "onomatopoeia_enabled": s.onomatopoeia_enabled,
         "mic_track_index": s.mic_track_index,
         "game_track_index": s.game_track_index,
+        "end_card_enabled": s.end_card_enabled,
+        "sparse_cuts_enabled": s.sparse_cuts_enabled,
     })
     if dir_changed:
         os.makedirs(s.output_dir, exist_ok=True)

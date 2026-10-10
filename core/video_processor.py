@@ -133,6 +133,8 @@ class VideoProcessor:
         camera_mode: str = "vtuber",          # "vtuber" | "facecam" | "none"
         mic_subtitles_enabled: bool = True,
         game_subtitles_enabled: bool = True,
+        end_card_enabled: bool = False,       # experiment primitive, default off
+        sparse_cuts_enabled: bool = False,    # cap trim to ≤3 kept segments
         onomatopoeia_enabled: bool = True,
         mic_track_index: str = "a:1",
         game_track_index: str = "a:2",
@@ -326,7 +328,10 @@ class VideoProcessor:
 
                 log_func("\n--- PHASE 2: Intelligent Trimming Analysis ---")
                 if enable_trimming:
-                    trimmer = IntelligentTrimmer(log_func=log_func)
+                    trimmer = IntelligentTrimmer(
+                        log_func=log_func,
+                        max_segments=3 if sparse_cuts_enabled else None,
+                    )
                     trim_segments = trimmer.analyze_for_trim(
                         video_path=input_file,
                         mic_transcriptions=mic_transcriptions_raw,
@@ -571,6 +576,18 @@ class VideoProcessor:
             )
             render_health["embed_status"] = "ok"
             log_func("✅ Subtitles embedded — final output written")
+
+            # ── Optional end card (experiment primitive, default off) ──
+            if end_card_enabled:
+                from core.end_card import append_end_card, pick_end_card_text
+                card_text = pick_end_card_text(mic_transcriptions_adjusted)
+                if card_text:
+                    applied = append_end_card(output_file, card_text, log_func)
+                    render_health["end_card"] = (
+                        "applied" if applied else "failed")
+                else:
+                    log_func("   🃏 End card: no usable closing line — skipped")
+                    render_health["end_card"] = "skipped_no_text"
 
             # ── PHASE 7: Title generation + metadata ──────────────────
             log_func("\n--- PHASE 7: Title Generation ---")
