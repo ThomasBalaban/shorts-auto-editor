@@ -12,6 +12,7 @@ Strict no-fallback policy (Phase 1.3 of gameplan.md):
 """
 import datetime
 import json
+import os
 import re
 import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
@@ -113,7 +114,49 @@ def _sanitize_title(title: str) -> str:
         if cat[0] in ("L", "M") and "LATIN" not in unicodedata.name(ch, ""):
             continue  # letter/mark from an unrelated script — corruption artifact
         kept.append(ch)
-    return " ".join("".join(kept).split())
+    return _strip_trailing_emoji(" ".join("".join(kept).split()))
+
+
+def _strip_trailing_emoji(title: str) -> str:
+    """Drop emoji appendages from the END of a title.
+
+    Channel data (title_pattern_retro): trailing emojis have zero
+    above-median examples — a clean negative signal. Mid-title emoji are
+    left alone; "?!" and other punctuation endings survive.
+    """
+    t = title.rstrip()
+    while t:
+        ch = t[-1]
+        if ch in ("️", "‍") or unicodedata.category(ch) in ("So", "Sk"):
+            t = t[:-1].rstrip()
+        else:
+            break
+    return t or title
+
+
+def _load_learned_title_patterns() -> Optional[Dict[str, Any]]:
+    """Read the strategist's corpus-learned title patterns, if present.
+
+    Best-effort sibling-checkout read (same layout convention as
+    shared_secrets): returns None when the artifact is missing, is an
+    operator stub, or carries no patterns — the prompt then simply omits
+    the learned-patterns block.
+    """
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..",
+        "shorts_strategist", "output", "recommendations", "channel",
+        f"{CHANNEL_HANDLE}.title_patterns.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    payload = data.get("payload") or {}
+    if payload.get("skipped_by_operator"):
+        return None
+    if not (payload.get("patterns_to_use") or payload.get("patterns_to_avoid")):
+        return None
+    return payload
 
 
 # JSON schema we ask Gemini to fill in. Captured here (not just inline in the
@@ -606,6 +649,40 @@ class TitleGenerator:
             f"cautions:\n{narrative.get('cautions', '')}",
         ])
 
+        # Learned title patterns from the strategist's corpus retrospective —
+        # measured on this channel's own titles vs breakout scores. Optional:
+        # the block collapses to nothing when the artifact isn't available.
+        patterns_payload = _load_learned_title_patterns()
+        learned_patterns_block = ""
+        if patterns_payload:
+            use_lines = "\n".join(
+                f"- {p.get('name')}: {p.get('description')}"
+                for p in patterns_payload.get("patterns_to_use", []))
+            avoid_lines = "\n".join(
+                f"- {p.get('name')}: {p.get('description')}"
+                for p in patterns_payload.get("patterns_to_avoid", []))
+            learned_patterns_block = f"""
+# Learned title patterns — measured on this channel's own titles
+These are corpus-level correlations between title STRUCTURE and breakout
+performance, independently critiqued for thin evidence. Same two-layer
+rule as the synthesis: fidelity to the clip first; among honest
+candidates, prefer USE shapes and reject AVOID shapes.
+
+USE (above-median track record):
+{use_lines}
+
+AVOID (zero or below-median track record):
+{avoid_lines}
+
+Data-backed style rules: never end the title with an emoji; prefer casual
+sentence case over frantic ALL-CAPS phrasing (all-caps is "usually avoid",
+not an absolute ban — an occasional short caps exclamation can work).
+"""
+            self.log_func(
+                f"[title] learned patterns injected: "
+                f"{len(patterns_payload.get('patterns_to_use', []))} use / "
+                f"{len(patterns_payload.get('patterns_to_avoid', []))} avoid")
+
         mic_text = self._strip_timestamps(mic_transcriptions)
         desktop_text = self._strip_timestamps(desktop_transcriptions)
         trim_str = self._trim_summary(
@@ -667,7 +744,7 @@ traits. Do NOT retrofit a title to a pattern; do select between
 honest candidates using the data.
 
 {synthesis_block}
-
+{learned_patterns_block}
 # Reference shorts ({len(shorts)}) — what has actually shipped on this channel
 Concrete worked examples of what has scored on this channel. Use them
 actively to compare candidates — which references does each candidate
