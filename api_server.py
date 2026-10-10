@@ -42,6 +42,9 @@ _settings: Dict[str, Any] = {
     # default OFF; flip per batch and judge on YouTube analytics.
     "end_card_enabled": False,
     "sparse_cuts_enabled": False,
+    # "gemini" (gemini-3.5-transcribe, diarization-capable) or "whisper".
+    # Gemini auto-falls back to the whisper chain on any failure.
+    "transcription_engine": "gemini",
     # Layout presets for zoom focus. Edited from the hub's "Layout" tab and
     # persisted to hub_settings.json via the launcher. Empty → legacy focus.
     "region_presets": [],
@@ -285,6 +288,7 @@ def _processing_worker() -> None:
                     mic_subtitles_enabled=_settings["mic_subtitles_enabled"],
                     end_card_enabled=_settings["end_card_enabled"],
                     sparse_cuts_enabled=_settings["sparse_cuts_enabled"],
+                    transcription_engine=_settings["transcription_engine"],
                     game_subtitles_enabled=_settings["game_subtitles_enabled"],
                     onomatopoeia_enabled=_settings["onomatopoeia_enabled"],
                     mic_track_index=_settings["mic_track_index"],
@@ -324,6 +328,7 @@ def _processing_worker() -> None:
                     mic_subtitles_enabled=_settings["mic_subtitles_enabled"],
                     end_card_enabled=_settings["end_card_enabled"],
                     sparse_cuts_enabled=_settings["sparse_cuts_enabled"],
+                    transcription_engine=_settings["transcription_engine"],
                     game_subtitles_enabled=_settings["game_subtitles_enabled"],
                     onomatopoeia_enabled=_settings["onomatopoeia_enabled"],
                     mic_track_index=_settings["mic_track_index"],
@@ -415,6 +420,7 @@ class SubtitlerSettings(BaseModel):
     game_track_index: str = "a:2"
     end_card_enabled: bool = False
     sparse_cuts_enabled: bool = False
+    transcription_engine: str = "gemini"
 
 
 class FilesPayload(BaseModel):
@@ -581,6 +587,7 @@ def post_settings(s: SubtitlerSettings):
         "game_track_index": s.game_track_index,
         "end_card_enabled": s.end_card_enabled,
         "sparse_cuts_enabled": s.sparse_cuts_enabled,
+        "transcription_engine": s.transcription_engine if s.transcription_engine in ("gemini", "whisper") else "gemini",
     })
     if dir_changed:
         os.makedirs(s.output_dir, exist_ok=True)

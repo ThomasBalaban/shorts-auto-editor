@@ -363,6 +363,131 @@ def _openai_transcribe(audio_path: str, language: str,
                 pass
 
 
+def _gemini_transcribe(audio_path: str, language: str,
+                       is_mic_track: bool, track_name: str,
+                       log_func) -> List[str]:
+    """
+    Call gemini-3.5-transcribe (verbatim mode, speaker diarization +
+    word-level timestamps) and return the same word-level timestamp
+    strings the Whisper path produces. Returns [] on any failure so the
+    caller falls through to OpenAI → local Whisper.
+
+    Trial 2026-10-09 (3 real mic tracks): faster than whisper-1
+    (2.0-3.4s vs 3.9-5.0s per 75s clip), higher word recall, and it
+    labels voice-chat friends as separate speakers on the mic track.
+    v1 keeps ALL speakers' words for parity with the Whisper path; the
+    speaker distribution is logged so we can judge a primary-speaker
+    filter on real batches before trusting it.
+
+    Uses the REST /v1beta/interactions surface directly — the installed
+    google-genai SDK predates the interactions API.
+    """
+    try:
+        import requests
+        from utils.config import get_gemini_api_key
+        from utils.models import get_gemini_client
+    except ImportError as e:
+        log_func(f"⚠️  gemini transcribe unavailable ({e})")
+        return []
+
+    api_key = get_gemini_api_key()
+    if not api_key:
+        return []
+
+    mp3_path = _to_mp3_for_api(audio_path, log_func)
+    temp_mp3_created = mp3_path != audio_path
+    try:
+        file_size_mb = os.path.getsize(mp3_path) / 1_048_576
+        log_func(f"📤 Uploading to gemini-3.5-transcribe "
+                 f"({file_size_mb:.1f} MB) …")
+        client = get_gemini_client()
+        uploaded = client.files.upload(file=mp3_path)
+        for _ in range(30):
+            f = client.files.get(name=uploaded.name)
+            if f.state and str(f.state).endswith("ACTIVE"):
+                break
+            time.sleep(1)
+
+        lang_code = ("en-US" if language.lower() in ("english", "en")
+                     else language)
+        resp = requests.post(
+            "https://generativelanguage.googleapis.com/v1beta/interactions",
+            headers={"x-goog-api-key": api_key,
+                     "Content-Type": "application/json"},
+            json={
+                "model": "gemini-3.5-transcribe",
+                "input": [{
+                    "type": "audio",
+                    "uri": uploaded.uri,
+                    "mime_type": "audio/mp3",
+                }],
+                "generation_config": {
+                    "transcription_config": {
+                        "language_codes": [lang_code],
+                        "mode": {
+                            "type": "verbatim",
+                            "diarization_mode": "speaker",
+                            "timestamp_granularities": ["word"],
+                        },
+                    }
+                },
+            },
+            timeout=300,
+        )
+        if resp.status_code != 200:
+            log_func(f"⚠️  gemini transcribe HTTP {resp.status_code}: "
+                     f"{resp.text[:300]}")
+            return []
+
+        payload = resp.json()
+        annotations = []
+        for step in payload.get("steps", []):
+            for content in step.get("content", []):
+                annotations.extend(
+                    a for a in (content.get("annotations") or [])
+                    if a.get("type") == "word_info")
+        if not annotations:
+            log_func("⚠️  gemini transcribe returned no word annotations")
+            return []
+
+        # Speaker distribution — logged for the future primary-speaker
+        # filter decision; all words are kept in v1.
+        by_speaker: dict = {}
+        for a in annotations:
+            by_speaker[a.get("speaker", "?")] = (
+                by_speaker.get(a.get("speaker", "?"), 0) + 1)
+        log_func(f"✅ gemini transcribed {len(annotations)} words for "
+                 f"{track_name} | speakers: {by_speaker}")
+
+        MIN_WORD_S = 0.15  # guard against the API's zero-width words
+        transcriptions = []
+        for a in annotations:
+            text = (a.get("text") or "").strip()
+            if not text:
+                continue
+            try:
+                start = float(str(a["start_offset"]).rstrip("s"))
+                end = float(str(a["end_offset"]).rstrip("s"))
+            except (KeyError, ValueError):
+                continue
+            if end <= start:
+                end = start + MIN_WORD_S
+            if is_mic_track:
+                text = text.upper()
+            transcriptions.append(f"{start:.2f}-{end:.2f}: {text}")
+        return transcriptions
+
+    except Exception as e:
+        log_func(f"⚠️  gemini transcribe error: {type(e).__name__}: {e}")
+        return []
+    finally:
+        if temp_mp3_created and os.path.exists(mp3_path):
+            try:
+                os.remove(mp3_path)
+            except Exception:
+                pass
+
+
 def _local_transcribe(model_path: str, device: str,
                       audio_path: str, language: str,
                       is_mic_track: bool, track_name: str,
@@ -436,11 +561,15 @@ def transcribe_audio(
     log_func,
     language: str,
     track_name: str = "",
+    engine: str = "gemini",
 ) -> Tuple[List[str], List[str]]:
     """
     Transcribe audio to word-level timestamp strings.
 
-    Priority:  OpenAI Whisper API  →  local faster-whisper + WhisperX
+    Priority (engine="gemini", the default since 2026-10):
+        gemini-3.5-transcribe → OpenAI Whisper API → local faster-whisper
+    Priority (engine="whisper"):
+        OpenAI Whisper API → local faster-whisper
 
     Returns:
         (raw_for_trimming, adjusted_for_subtitles)
@@ -454,17 +583,24 @@ def transcribe_audio(
 
         is_mic_track = "mic" in track_name.lower() or "track 2" in track_name.lower()
 
-        # ── 1. Try OpenAI API ─────────────────────────────────────────────
+        # ── 0. Gemini transcribe (unless the operator pinned whisper) ────
         transcriptions = []
-        if not _openai_available:
-            log_func("⚠️  OpenAI package not installed — using local Whisper "
-                     "(run: pip install openai  to enable the API path)")
-        else:
-            log_func(f"🌐 Attempting OpenAI Whisper API for {track_name} …")
-            transcriptions = _openai_transcribe(
-                audio_path, language, is_mic_track, track_name, log_func,
-                device=device,
-            )
+        if engine == "gemini":
+            log_func(f"🌐 Attempting gemini-3.5-transcribe for {track_name} …")
+            transcriptions = _gemini_transcribe(
+                audio_path, language, is_mic_track, track_name, log_func)
+
+        # ── 1. OpenAI API (primary for engine=whisper, fallback otherwise)
+        if not transcriptions:
+            if not _openai_available:
+                log_func("⚠️  OpenAI package not installed — using local Whisper "
+                         "(run: pip install openai  to enable the API path)")
+            else:
+                log_func(f"🌐 Attempting OpenAI Whisper API for {track_name} …")
+                transcriptions = _openai_transcribe(
+                    audio_path, language, is_mic_track, track_name, log_func,
+                    device=device,
+                )
 
         # ── 2. Fall back to local model ───────────────────────────────────
         if not transcriptions:

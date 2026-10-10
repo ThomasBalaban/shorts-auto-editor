@@ -135,6 +135,7 @@ class VideoProcessor:
         game_subtitles_enabled: bool = True,
         end_card_enabled: bool = False,       # experiment primitive, default off
         sparse_cuts_enabled: bool = False,    # cap trim to ≤3 kept segments
+        transcription_engine: str = "gemini",  # "gemini" | "whisper"
         onomatopoeia_enabled: bool = True,
         mic_track_index: str = "a:1",
         game_track_index: str = "a:2",
@@ -201,6 +202,7 @@ class VideoProcessor:
                 ) = core.transcriber.transcribe_audio(
                     "large", "cpu", mic_audio_path, True, log_func,
                     "English", "Track 2 (Mic)",
+                    engine=transcription_engine,
                 )
                 log_func(
                     f"✅ Mic transcription complete: "
@@ -260,6 +262,7 @@ class VideoProcessor:
                 ) = core.transcriber.transcribe_audio(
                     "large", "cpu", desktop_audio_path, True, log_func,
                     "English", "Track 3 (Desktop)",
+                    engine=transcription_engine,
                 )
                 try:
                     os.remove(desktop_audio_path)
