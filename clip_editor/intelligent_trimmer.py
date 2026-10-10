@@ -44,12 +44,15 @@ from clip_editor.narrative_planner import (
 
 
 class IntelligentTrimmer:
-    def __init__(self, log_func=None):
+    def __init__(self, log_func=None, max_segments: Optional[int] = None):
         self.log_func = log_func or print
         self.client = get_gemini_client()
         self.safety_settings = get_safety_settings()
         self.max_clip_duration = 55.0
         self.min_clip_duration = 12.0
+        # Sparse-cut mode (channel data: sparse 1-3 cuts is a winner
+        # pattern; dense cutting is bottom-quintile). None = model's choice.
+        self.max_segments = max_segments
         # Stash of the last successful parse so callers (the metadata
         # writer in particular) can read the punch_point_time and
         # description without us having to widen the analyze_for_trim
@@ -452,6 +455,17 @@ class IntelligentTrimmer:
                 "must-keep moments into trim prompt"
             )
 
+        # Sparse-cut mode: cap the number of kept segments. Channel data
+        # says 1-3 cuts with no text overlay is the winning default.
+        sparse_block = ""
+        if self.max_segments:
+            sparse_block = (
+                f"\nSPARSE-CUT MODE (operator setting): return AT MOST "
+                f"{self.max_segments} kept segments. Prefer one continuous "
+                f"setup→punch segment when the source allows it; every "
+                f"additional cut needs to earn its place.\n"
+            )
+
         # Gemini 3 prompt-engineering best practice:
         #  - Put the data context first
         #  - Put the instructions at the end ("Based on the information above…")
@@ -503,6 +517,7 @@ immediately BEFORE the punch point whenever the source has it. The breath
 of silence before the payoff is what makes it land — on this channel it is
 one of the strongest breakout correlates. Never start a cut so close to the
 punch point that the tension beat is amputated.
+{sparse_block}
 
 STEP 4 — VERIFY BEFORE OUTPUTTING
   - Does every kept second directly serve the punch or the minimum setup?
@@ -592,6 +607,13 @@ Based on the video and dialogue above, produce that JSON now.
                 self.log_func(
                     f"   ✓ Keep {start:.1f}s–{end:.1f}s "
                     f"({end - start:.1f}s) — {reason}"
+                )
+
+            if self.max_segments and len(segments) > self.max_segments:
+                self.log_func(
+                    f"   ⚠ Sparse-cut mode asked for ≤{self.max_segments} "
+                    f"segments, model returned {len(segments)} — keeping "
+                    f"them all (recorded for review)"
                 )
 
             # Silence-beat guard: if the segment containing the punch point
