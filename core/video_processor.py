@@ -72,6 +72,24 @@ def _mic_has_no_real_speech(mic_audio_path, log_func):
     return True       # energy present but not speech-like → skip
 
 
+def _source_fingerprint(path: str) -> str:
+    """Cheap stable fingerprint of a source recording.
+
+    size + sha256 of the first 4 MB — enough to recognize "same raw
+    moment, different render" without hashing multi-GB files. The scheme
+    prefix lets us change the recipe later without ambiguity.
+    """
+    import hashlib
+    try:
+        size = os.path.getsize(path)
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            h.update(f.read(4 * 1024 * 1024))
+        return f"sz{size}-h4m-{h.hexdigest()[:16]}"
+    except OSError:
+        return ""
+
+
 def _no_dialogue_skip_metadata(input_file, output_file):
     """Minimal metadata record for a clip skipped for having no dialogue.
 
@@ -136,6 +154,7 @@ class VideoProcessor:
         end_card_enabled: bool = False,       # experiment primitive, default off
         sparse_cuts_enabled: bool = False,    # cap trim to ≤3 kept segments
         transcription_engine: str = "gemini",  # "gemini" | "whisper"
+        identity=None,  # Optional[dict]: cut_id/batch_id/batch_index/batch_size
         onomatopoeia_enabled: bool = True,
         mic_track_index: str = "a:1",
         game_track_index: str = "a:2",
@@ -649,6 +668,11 @@ class VideoProcessor:
                     "processed_at": datetime.datetime.now().isoformat(),
                     "original_duration": source_video_duration,
                     "final_duration": final_duration_value,
+                    # Identity spine (MISSION Phase 3): the cut_id is
+                    # canonical once minted; source_fingerprint links
+                    # re-renders of the same raw moment across cuts.
+                    **(identity or {}),
+                    "source_fingerprint": _source_fingerprint(input_file),
                     # Iteration tracking for the pre-publish edit-review loop.
                     # shorts-auto-editor owns these counters and enforces the cap;
                     # shorts_strategist scores each iteration and recommends
@@ -714,6 +738,7 @@ class VideoProcessor:
                         "original_filename": os.path.basename(input_file),
                         "output_filename": os.path.basename(output_file),
                         "processed_at": datetime.datetime.now().isoformat(),
+                        **(identity or {}),
                     },
                     "render_health": render_health,
                 }

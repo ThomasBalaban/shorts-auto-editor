@@ -404,38 +404,23 @@ class DualSubtitleApp:
                     self._refresh_files_display(completed_index=i)
                 self.root.after(0, update_ui_on_completion)
 
-            # Save batch metadata at end of batch
+            # Save batch metadata: one record per file, atomically, with a
+            # race-free index claim (shared helper with the API server).
             if batch_metadata_list:
                 try:
                     self.log("\n--- Saving Batch Metadata ---")
+                    from utils.atomic_io import (
+                        atomic_json_dump, claim_next_metadata_path)
                     project_root = os.path.dirname(
                         os.path.abspath(__file__))
                     shorts_data_dir = os.path.join(
                         project_root, "shorts_data")
-                    os.makedirs(shorts_data_dir, exist_ok=True)
 
-                    max_index = 0
-                    try:
-                        for fname in os.listdir(shorts_data_dir):
-                            match = re.match(
-                                r"shorts_metadata_(\d+)\.json", fname)
-                            if match:
-                                idx = int(match.group(1))
-                                if idx > max_index:
-                                    max_index = idx
-                    except Exception:
-                        pass
-
-                    next_index = max_index + 1
-                    json_filename = f"shorts_metadata_{next_index}.json"
-                    json_path = os.path.join(
-                        shorts_data_dir, json_filename)
-
-                    with open(json_path, "w", encoding="utf-8") as f:
-                        json.dump(
-                            batch_metadata_list, f, indent=2, default=str)
-
-                    self.log(f"✅ Batch metadata saved to: {json_path}")
+                    for record in batch_metadata_list:
+                        json_path, _ = claim_next_metadata_path(
+                            shorts_data_dir)
+                        atomic_json_dump([record], json_path)
+                        self.log(f"✅ Metadata saved to: {json_path}")
                 except Exception as meta_err:
                     self.log(
                         f"⚠️ Failed to save batch metadata: {meta_err}")

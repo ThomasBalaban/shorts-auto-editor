@@ -631,8 +631,11 @@ def transcribe_audio(
         return raw_for_trimming, adjusted_for_subs
 
     except Exception as e:
-        log_func(f"Error in transcription: {e}")
+        # Honest record: never return the error text as a transcript line —
+        # it used to render as an animated subtitle in the shipped video and
+        # entered the trim prompt as "dialogue". Empty + loud log instead.
+        log_func(f"🚨 TRANSCRIPTION CRASHED for {track_name} — proceeding "
+                 f"with an EMPTY transcript (no subtitles from this track): {e}")
         import traceback
         log_func(traceback.format_exc())
-        err = [f"0.0-5.0: Transcription error: {e}"]
-        return err, err
+        return [], []

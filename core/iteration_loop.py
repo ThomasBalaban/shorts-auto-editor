@@ -589,6 +589,7 @@ class IterationOrchestrator:
         end_card_enabled: bool = False,
         sparse_cuts_enabled: bool = False,
         transcription_engine: str = "gemini",
+        identity: Optional[Dict[str, Any]] = None,
         onomatopoeia_enabled: bool = True,
         mic_track_index: str = "a:1",
         game_track_index: str = "a:2",
@@ -641,6 +642,7 @@ class IterationOrchestrator:
                 end_card_enabled=end_card_enabled,
                 sparse_cuts_enabled=sparse_cuts_enabled,
                 transcription_engine=transcription_engine,
+                identity=identity,
                 onomatopoeia_enabled=onomatopoeia_enabled,
                 mic_track_index=mic_track_index,
                 game_track_index=game_track_index,
@@ -810,10 +812,11 @@ class IterationOrchestrator:
             return None
 
     def _write_metadata(self, metadata_path: str, metadata: Dict[str, Any]) -> None:
-        os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
         # Match the existing batch convention: a single-element list.
-        with open(metadata_path, "w", encoding="utf-8") as f:
-            json.dump([metadata], f, indent=2, default=str)
+        # Atomic (tmp + os.replace) — a torn read here used to stop the
+        # strategist's thinker loop entirely.
+        from utils.atomic_io import atomic_json_dump
+        atomic_json_dump([metadata], metadata_path)
 
     def _finalize_and_return(
         self,

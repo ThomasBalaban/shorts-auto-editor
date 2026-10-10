@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from collections import deque
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List
@@ -215,9 +216,15 @@ def _processing_worker() -> None:
     if _session_log_path:
         _log(f"📄 Session log: {_session_log_path}")
 
+    # Identity spine (MISSION Phase 3): every video in this batch carries
+    # the batch stamp, and each gets a cut_id minted below.
+    batch_id = "batch_" + time.strftime("%Y%m%d_%H%M%S")
+    batch_size = len(queued_indices)
+    _log(f"🪪 batch_id: {batch_id} ({batch_size} videos)")
+
     batch_metadata: List[Dict[str, Any]] = []
 
-    for idx in queued_indices:
+    for batch_index, idx in enumerate(queued_indices, start=1):
         if _stop_requested:
             _log("⏹  Stop requested — halting batch.")
             break
@@ -233,6 +240,25 @@ def _processing_worker() -> None:
             f"{os.path.basename(entry['input_path'])}"
         )
         _log(f"{'='*40}")
+
+        # Mint the cut_id and stamp it into the output filename so the
+        # editor→publisher→YouTube join is lossless (uploads always go
+        # through the publisher, which extracts the id from the name).
+        cut_id = "cut_" + uuid.uuid4().hex[:8]
+        out_dir, out_name = os.path.split(entry["output_path"])
+        out_stem, out_ext = os.path.splitext(out_name)
+        if cut_id not in out_stem:
+            with _lock:
+                _files[idx]["output_path"] = os.path.join(
+                    out_dir, f"{out_stem}-{cut_id}{out_ext}")
+            entry = _files[idx]
+        identity = {
+            "cut_id": cut_id,
+            "batch_id": batch_id,
+            "batch_index": batch_index,
+            "batch_size": batch_size,
+        }
+        _log(f"🪪 {cut_id} ({batch_index}/{batch_size})")
 
         try:
             env_flag = os.environ.get(
@@ -256,16 +282,11 @@ def _processing_worker() -> None:
                 shorts_data_dir = os.path.join(project_root, "shorts_data")
                 os.makedirs(shorts_data_dir, exist_ok=True)
 
-                # Pick the next available metadata filename. Mirrors the
-                # logic in _save_batch_metadata.
-                import re
-                max_index = 0
-                for fname in os.listdir(shorts_data_dir):
-                    m = re.match(r"shorts_metadata_(\d+)\.json", fname)
-                    if m:
-                        max_index = max(max_index, int(m.group(1)))
-                per_video_metadata_path = os.path.join(
-                    shorts_data_dir, f"shorts_metadata_{max_index + 1}.json")
+                # Claim the next metadata filename atomically (the old
+                # scan-then-write raced with the GUI).
+                from utils.atomic_io import claim_next_metadata_path
+                per_video_metadata_path, _ = claim_next_metadata_path(
+                    shorts_data_dir)
 
                 out_dir, out_name = os.path.split(entry["output_path"])
                 out_stem, out_ext = os.path.splitext(out_name)
@@ -278,6 +299,7 @@ def _processing_worker() -> None:
                     input_file=entry["input_path"],
                     output_file_template=output_template,
                     metadata_path=per_video_metadata_path,
+                    identity=identity,
                     animation_type=_settings["animation_type"],
                     sync_offset=_settings["sync_offset"],
                     detailed_logs=True,
@@ -322,6 +344,7 @@ def _processing_worker() -> None:
                     detailed_logs=True,
                     log_func=_log,
                     enable_trimming=_settings["enable_trimming"],
+                    identity=identity,
                     camera_region=camera_region,
                     gameplay_region=gameplay_region,
                     camera_mode=_camera_mode(),
@@ -350,6 +373,16 @@ def _processing_worker() -> None:
                         _files[idx]["status"] = "skipped" if skipped else "done"
                     _files[idx]["title"] = (meta or {}).get("title", "") or ""
                 if meta:
+                    # One record per metadata file, written immediately and
+                    # atomically (every consumer reads record [0]; the old
+                    # end-of-batch multi-record file lost all but the first).
+                    from utils.atomic_io import (
+                        atomic_json_dump, claim_next_metadata_path)
+                    project_root = os.path.dirname(os.path.abspath(__file__))
+                    meta_path, _ = claim_next_metadata_path(
+                        os.path.join(project_root, "shorts_data"))
+                    atomic_json_dump([meta], meta_path)
+                    _log(f"✅ Metadata saved to: {meta_path}")
                     batch_metadata.append(meta)
             if (meta or {}).get("status") == "skipped_no_dialogue":
                 _log(f"⏭️  Skipped (no dialogue): "
@@ -372,37 +405,14 @@ def _processing_worker() -> None:
             )
             _log(traceback.format_exc())
 
-    if batch_metadata:
-        try:
-            _save_batch_metadata(batch_metadata)
-        except Exception as e:
-            _log(f"⚠️ Failed to save batch metadata: {e}")
+    # (Per-video metadata is written one-record-per-file inside the loop;
+    # the old end-of-batch multi-record _save_batch_metadata is gone.)
 
     with _lock:
         _processing = False
         _current_index = -1
     _log("=== Batch complete ===")
     _session_log_path = ""
-
-
-def _save_batch_metadata(batch_metadata: List[Dict[str, Any]]) -> None:
-    """Mirror main.py: write the batch's per-video metadata to
-    shorts_data/shorts_metadata_<N>.json with auto-incrementing index."""
-    import json
-    import re
-    shorts_data_dir = os.path.join(_HERE, "shorts_data")
-    os.makedirs(shorts_data_dir, exist_ok=True)
-    max_index = 0
-    for fname in os.listdir(shorts_data_dir):
-        m = re.match(r"shorts_metadata_(\d+)\.json", fname)
-        if m:
-            max_index = max(max_index, int(m.group(1)))
-    next_index = max_index + 1
-    json_path = os.path.join(
-        shorts_data_dir, f"shorts_metadata_{next_index}.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(batch_metadata, f, indent=2, default=str)
-    _log(f"✅ Batch metadata saved to: {json_path}")
 
 
 # ─── Pydantic models ──────────────────────────────────────────────────────────
