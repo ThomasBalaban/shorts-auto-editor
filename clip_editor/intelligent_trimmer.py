@@ -29,6 +29,7 @@ from typing import List, Tuple, Optional
 from google.genai import types
 
 from utils.models import (
+    MEDIA_RES_TRIM,
     MODEL_PRO,
     THINKING_TRIM,
     get_gemini_client,
@@ -108,31 +109,28 @@ class IntelligentTrimmer:
     def _format_transcription(
         self,
         transcriptions: List[str],
-        max_lines: int = 200,
+        max_lines: int = 300,
     ) -> str:
+        """Phrase-per-line dialogue view (MISSION Phase 2.1).
+
+        The old word-per-line format capped at 200 lines kept only the
+        first/last ~100 WORDS, so longer clips lost exactly their middle
+        — the trimmer could not see the dialogue it was cutting around.
+        Utterance grouping compresses ~10x, so the whole transcript fits;
+        the middle-omitted fallback survives only as a last resort that a
+        shorts-length clip never hits.
+        """
         if not transcriptions:
             return "No dialogue detected"
-        parsed: List[Tuple[float, str]] = []
-        for line in transcriptions:
-            try:
-                time_part, text = line.split(":", 1)
-                start_str, _ = time_part.split("-")
-                parsed.append((float(start_str), text.strip()))
-            except Exception:
-                continue
-        if not parsed:
+        from utils.timestamp_processor import group_words_into_utterances
+        utterances = group_words_into_utterances(transcriptions)
+        if not utterances:
             return "No valid dialogue"
-        if len(parsed) > max_lines:
+        lines = [f"[{s:.1f}s–{e:.1f}s] {text}" for s, e, text in utterances]
+        if len(lines) > max_lines:
             half = max_lines // 2
-            parsed = (
-                parsed[:half]
-                + [(-1, "... [middle omitted] ...")]
-                + parsed[-half:]
-            )
-        out = []
-        for ts, text in parsed:
-            out.append(text if ts == -1 else f"[{ts:.1f}s] {text}")
-        return "\n".join(out)
+            lines = lines[:half] + ["... [middle omitted] ..."] + lines[-half:]
+        return "\n".join(lines)
 
     # ── Gemini call ───────────────────────────────────────────────────────
     # Strategy:
@@ -217,6 +215,9 @@ class IntelligentTrimmer:
                     thinking_config=types.ThinkingConfig(
                         thinking_level=THINKING_TRIM,
                     ),
+                    # "details matter" — declared in utils/models.py since
+                    # June but never passed until 2026-10 (Phase 2.7).
+                    media_resolution=MEDIA_RES_TRIM,
                 ),
             )
 
@@ -275,6 +276,7 @@ class IntelligentTrimmer:
                         thinking_config=types.ThinkingConfig(
                             thinking_level=THINKING_TRIM,
                         ),
+                        media_resolution=MEDIA_RES_TRIM,
                     ),
                 )
 

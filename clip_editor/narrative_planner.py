@@ -322,20 +322,16 @@ class NarrativePlanner:
     @staticmethod
     def _format_transcription(transcriptions: List[str]) -> str:
         """Mirror IntelligentTrimmer._format_transcription so the planner
-        sees the same dialogue view the trimmer does."""
+        sees the same dialogue view the trimmer does (phrase-per-line
+        utterances — both prompts now carry the whole transcript)."""
         if not transcriptions:
             return "No dialogue detected"
-        parsed: List[Tuple[float, str]] = []
-        for line in transcriptions:
-            try:
-                time_part, text = line.split(":", 1)
-                start_str, _ = time_part.split("-")
-                parsed.append((float(start_str), text.strip()))
-            except Exception:
-                continue
-        if not parsed:
+        from utils.timestamp_processor import group_words_into_utterances
+        utterances = group_words_into_utterances(transcriptions)
+        if not utterances:
             return "No valid dialogue"
-        return "\n".join(f"[{ts:.1f}s] {text}" for ts, text in parsed)
+        return "\n".join(
+            f"[{s:.1f}s–{e:.1f}s] {text}" for s, e, text in utterances)
 
     def _parse(self, text: str, video_duration: float) -> Optional[dict]:
         try:

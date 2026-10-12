@@ -155,6 +155,38 @@ def format_timestamp_line(start_time, end_time, text):
     return f"{start_time:.2f}-{end_time:.2f}: {text}"
 
 
+def group_words_into_utterances(
+    transcriptions: List[str],
+    gap_threshold: float = 0.6,
+) -> List[Tuple[float, float, str]]:
+    """Group word-per-line 'S-E: word' strings into utterance tuples.
+
+    Returns [(start, end, phrase), ...]. A silence longer than
+    ``gap_threshold`` between one word's end and the next word's start
+    opens a new utterance. ~10x fewer lines than word-per-line, which is
+    what lets the trim/planner prompts carry the WHOLE transcript instead
+    of dropping the middle (MISSION Phase 2.1).
+    """
+    utterances: List[Tuple[float, float, str]] = []
+    cur = None
+    for line in transcriptions:
+        parsed = parse_timestamp_line(line)
+        if not parsed:
+            continue
+        s, e, text = parsed
+        if not text:
+            continue
+        if cur is not None and s - cur[1] <= gap_threshold:
+            cur = (cur[0], max(cur[1], e), cur[2] + " " + text)
+        else:
+            if cur is not None:
+                utterances.append(cur)
+            cur = (s, e, text)
+    if cur is not None:
+        utterances.append(cur)
+    return utterances
+
+
 def shift_transcriptions_to_output_time(
     transcriptions: List[str],
     kept_segments: List[Tuple[float, float]],
@@ -238,9 +270,27 @@ def extend_segments_for_dialogue(
         
         new_start = max(0.0, ai_start - buffer_seconds)
         new_end = ai_end
-        
+
         if new_start < last_end_time:
             new_start = last_end_time
+
+        # --- STEP 0: PROTECT THE SEGMENT *START* (mirror of the end fix) ---
+        # A segment that begins mid-word clips the word's head at every
+        # jump cut. Pull the start back to the straddled word's onset,
+        # bounded by the previous segment's end. Same abnormal-duration
+        # guard as the end-side protection.
+        for (w_start, w_end, text, track) in all_words:
+            if w_start < new_start < w_end:
+                if (w_end - w_start) > 1.5:  # MAX_PROTECTABLE_WORD_DURATION
+                    continue
+                pulled = max(last_end_time, 0.0, w_start - 0.1)
+                if pulled < new_start:
+                    log_func(
+                        f"      🛡️ Protected segment-start word ({track}): "
+                        f"'{text}' ({w_start:.2f}-{w_end:.2f}) — start "
+                        f"{new_start:.2f}s → {pulled:.2f}s")
+                    new_start = pulled
+                break
 
         # --- STEP 1: WHISPER-BASED PROTECTION (The Fix) ---
         # Check if the cut point (ai_end) slices through a word or is uncomfortably close
