@@ -553,6 +553,23 @@ def _local_transcribe(model_path: str, device: str,
 # Main entry point (matches original signature)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# In-process result cache. The iteration loop re-extracts and re-transcribes
+# the SAME source audio on every replay iteration — identical input, identical
+# output, pure wasted spend/latency (observed 2026-10-10: every cut
+# transcribed twice). Keyed by content hash so temp-file reuse can't alias.
+_TRANSCRIPTION_CACHE: dict = {}
+_TRANSCRIPTION_CACHE_MAX = 32
+
+
+def _audio_sha(path: str) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def transcribe_audio(
     model_path: str,
     device: str,
@@ -580,6 +597,14 @@ def transcribe_audio(
         if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
             log_func(f"ERROR: Invalid audio file: {audio_path}")
             return [], []
+
+        cache_key = (_audio_sha(audio_path), track_name, language,
+                     engine, include_timecodes)
+        cached = _TRANSCRIPTION_CACHE.get(cache_key)
+        if cached is not None:
+            log_func(f"♻️  Transcription cache hit for {track_name} "
+                     f"({len(cached[0])} words) — skipping re-transcription")
+            return list(cached[0]), list(cached[1])
 
         is_mic_track = "mic" in track_name.lower() or "track 2" in track_name.lower()
 
@@ -627,6 +652,11 @@ def transcribe_audio(
         adjusted = apply_duration_adjustments(
             list(transcriptions), track_name, log_func)
         adjusted_for_subs = fix_overlapping_timestamps(adjusted)
+
+        if len(_TRANSCRIPTION_CACHE) >= _TRANSCRIPTION_CACHE_MAX:
+            _TRANSCRIPTION_CACHE.clear()
+        _TRANSCRIPTION_CACHE[cache_key] = (
+            list(raw_for_trimming), list(adjusted_for_subs))
 
         return raw_for_trimming, adjusted_for_subs
 

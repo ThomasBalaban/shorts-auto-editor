@@ -678,7 +678,7 @@ Data-backed style rules: never end the title with an emoji; prefer casual
 sentence case over frantic ALL-CAPS phrasing (all-caps is "usually avoid",
 not an absolute ban — an occasional short caps exclamation can work).
 """
-            self.log_func(
+            self._log(
                 f"[title] learned patterns injected: "
                 f"{len(patterns_payload.get('patterns_to_use', []))} use / "
                 f"{len(patterns_payload.get('patterns_to_avoid', []))} avoid")
