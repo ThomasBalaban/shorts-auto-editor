@@ -181,7 +181,11 @@ class VideoEditor:
             "-i", input_video,
             "-filter_complex", filter_str,
             "-map", "[output]",
-            "-map", "0:a?", "-c:a", "copy",
+            # Video-only on purpose: segment audio is discarded at concat
+            # (the output takes intact audio from the source), and copied
+            # AAC packets overshot -t on ffmpeg 8, inflating container
+            # durations and tripling the concat output (seen 2026-10-14).
+            "-an",
             "-c:v", "libx264", "-preset", "veryfast",
             "-crf", "18", "-r", "60",
             "-pix_fmt", "yuv420p",
@@ -298,7 +302,7 @@ class VideoEditor:
             "-filter_complex",
             "scale=1080:1920:flags=bilinear,fps=60,format=yuv420p[vout]",
             "-map", "[vout]",
-            "-map", "0:a?", "-c:a", "copy",
+            "-an",  # see _process_segment_with_effect — concat owns audio
             "-c:v", "libx264", "-preset", "veryfast",
             "-crf", "18", "-r", "60",
             "-pix_fmt", "yuv420p",
@@ -333,7 +337,10 @@ class VideoEditor:
                 concat.write(f"file '{f}'\n")
             concat.close()
 
-            if source_video and os.path.exists(source_video):
+            expected = self._get_video_duration(source_video) \
+                if source_video and os.path.exists(source_video) else None
+
+            if expected:
                 cmd = [
                     "ffmpeg", "-y", "-loglevel", "error",
                     "-f", "concat", "-safe", "0",
@@ -348,21 +355,38 @@ class VideoEditor:
                                    timeout=300)
                 if (r.returncode == 0 and os.path.exists(output_video)
                         and os.path.getsize(output_video) > 1000):
-                    self.log_func("✅ Segments concatenated (stream copy + "
-                                  "intact source audio)")
-                    return
-                self.log_func(
-                    f"⚠ copy-concat failed, re-encoding instead: "
-                    f"{r.stderr[:200] if r.stderr else '?'}")
+                    # Duration guard: the first copy-concat shipped a 3x-long
+                    # video because segment container durations lied. Never
+                    # trust the demuxer blindly again.
+                    got = self._get_video_duration(output_video)
+                    if abs(got - expected) <= 1.0:
+                        self.log_func("✅ Segments concatenated (stream copy "
+                                      "+ intact source audio)")
+                        return
+                    self.log_func(
+                        f"⚠ copy-concat duration off ({got:.1f}s vs expected "
+                        f"{expected:.1f}s) — re-encoding instead")
+                else:
+                    self.log_func(
+                        f"⚠ copy-concat failed, re-encoding instead: "
+                        f"{r.stderr[:200] if r.stderr else '?'}")
 
+            # Fallback: re-encode the concatenated video; segments are
+            # video-only, so audio still comes from the source when we
+            # have it.
             cmd = [
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-f", "concat", "-safe", "0",
                 "-i", concat.name,
+            ]
+            if expected:
+                cmd += ["-i", source_video, "-map", "0:v", "-map", "1:a?"]
+            cmd += [
                 "-fflags", "+genpts",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
                 "-c:a", "aac", "-b:a", "192k",
                 "-pix_fmt", "yuv420p",
+                "-shortest",
                 "-movflags", "+faststart",
                 output_video,
             ]
