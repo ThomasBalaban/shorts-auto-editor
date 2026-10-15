@@ -54,6 +54,9 @@ class IntelligentTrimmer:
         # Sparse-cut mode (channel data: sparse 1-3 cuts is a winner
         # pattern; dense cutting is bottom-quintile). None = model's choice.
         self.max_segments = max_segments
+        # Which render path the last apply_trim actually used
+        # ("v2" | "v1_fallback" | "v1_pinned") — stamped into render_health.
+        self.last_render_pipeline: Optional[str] = None
         # Stash of the last successful parse so callers (the metadata
         # writer in particular) can read the punch_point_time and
         # description without us having to widen the analyze_for_trim
@@ -656,8 +659,97 @@ Based on the video and dialogue above, produce that JSON now.
             self.log_func(f"   Raw: {response_text[:500]}")
             return []
 
-    # ── FFmpeg execution (unchanged) ──────────────────────────────────────
+    # ── FFmpeg execution ──────────────────────────────────────────────────
+    # v2 (default): ONE filter_complex pass — trim/atrim each kept range,
+    # concat the decoded streams, encode video and audio exactly once.
+    # The audio is a single continuous encode, so the per-segment AAC
+    # packet boundaries that clicked/drifted at every jump cut (MISSION
+    # Phase 2.6) are structurally impossible. Also one fewer video
+    # generation than v1 (no per-segment encode + copy-concat).
+    #
+    # Escape hatch: SHORTS_RENDER_PIPELINE=v1 pins the old per-segment
+    # path; any v2 failure also falls back to v1 automatically. The path
+    # actually used lands in render_health.render_pipeline.
+
     def _apply_trim(
+        self,
+        input_video: str,
+        output_video: str,
+        segments_to_keep: List[Tuple[float, float]],
+    ) -> bool:
+        pin = os.environ.get("SHORTS_RENDER_PIPELINE", "").strip().lower()
+        if pin == "v1":
+            self.log_func("   ⚙ render pipeline pinned to v1 (env)")
+            self.last_render_pipeline = "v1_pinned"
+            return self._apply_trim_v1(
+                input_video, output_video, segments_to_keep)
+        if self._apply_trim_single_pass(
+                input_video, output_video, segments_to_keep):
+            self.last_render_pipeline = "v2"
+            return True
+        self.log_func("   ⚠ single-pass render failed — falling back to the "
+                      "v1 per-segment path")
+        self.last_render_pipeline = "v1_fallback"
+        return self._apply_trim_v1(input_video, output_video, segments_to_keep)
+
+    def _apply_trim_single_pass(
+        self,
+        input_video: str,
+        output_video: str,
+        segments_to_keep: List[Tuple[float, float]],
+    ) -> bool:
+        try:
+            self.log_func("\n✂️  Applying trim (single-pass render) …")
+            parts = []
+            pair_labels = []
+            for i, (start, end) in enumerate(segments_to_keep):
+                parts.append(
+                    f"[0:v]trim=start={start:.3f}:end={end:.3f},"
+                    f"setpts=PTS-STARTPTS[v{i}];"
+                    f"[0:a]atrim=start={start:.3f}:end={end:.3f},"
+                    f"asetpts=PTS-STARTPTS[a{i}];"
+                )
+                pair_labels.append(f"[v{i}][a{i}]")
+            graph = (
+                "".join(parts)
+                + "".join(pair_labels)
+                + f"concat=n={len(segments_to_keep)}:v=1:a=1[vout][aout]"
+            )
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", input_video,
+                "-filter_complex", graph,
+                "-map", "[vout]", "-map", "[aout]",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k",
+                "-movflags", "+faststart",
+                output_video,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    timeout=900)
+            if result.returncode != 0 or not os.path.exists(output_video) \
+                    or os.path.getsize(output_video) < 1000:
+                self.log_func(
+                    f"   ✗ single-pass ffmpeg failed: "
+                    f"{result.stderr[-400:] if result.stderr else '?'}")
+                return False
+            final_dur = get_video_duration(output_video, self.log_func)
+            expected = sum(e - s for s, e in segments_to_keep)
+            if final_dur < 1.0 or final_dur < expected * 0.4:
+                self.log_func(
+                    f"   ✗ single-pass output suspiciously short: "
+                    f"{final_dur:.1f}s (expected ~{expected:.1f}s)")
+                return False
+            self.log_func(
+                f"   ✅ Trim applied (single pass, {len(segments_to_keep)} "
+                f"segments, one continuous audio encode)")
+            return True
+        except Exception as e:
+            self.log_func(f"   ✗ single-pass render error: {e}")
+            return False
+
+    def _apply_trim_v1(
         self,
         input_video: str,
         output_video: str,

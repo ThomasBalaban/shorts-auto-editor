@@ -84,13 +84,14 @@ def embed_subtitles(input_video, output_video, track2_srt, track3_srt, onomatopo
             
     video_filter = ",".join(filter_parts)
 
-    # Construct the final ffmpeg command
-    # Use CRF 10 to maintain high quality before the final trim
+    # Construct the final ffmpeg command. CRF 18 is visually transparent;
+    # the old CRF 10 spent bits YouTube's transcode immediately discarded
+    # (MISSION Phase 2.4) and roughly doubled file sizes.
     cmd_embed = [
         'ffmpeg', '-y',
         '-i', input_video,
         '-vf', video_filter,
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '10',
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
         '-c:a', 'copy',
         output_video
     ]

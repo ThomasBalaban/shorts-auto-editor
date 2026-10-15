@@ -425,6 +425,8 @@ class VideoProcessor:
                     segments_to_keep=extended_trim_segments,
                 )
                 render_health["trim_attempted"] = True
+                render_health["render_pipeline"] = getattr(
+                    applier, "last_render_pipeline", None)
                 if trim_success and os.path.exists(trimmed_video_path):
                     render_health["trim_applied"] = True
                     video_to_process = trimmed_video_path

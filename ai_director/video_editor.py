@@ -118,7 +118,8 @@ class VideoEditor:
                 else:
                     self._extract_plain_segment(input_video, out, seg)
                 segment_files.append(out)
-            self._concatenate_segments(segment_files, output_video)
+            self._concatenate_segments(segment_files, output_video,
+                                       source_video=input_video)
         finally:
             for f in segment_files:
                 try:
@@ -313,7 +314,17 @@ class VideoEditor:
 
     def _concatenate_segments(
         self, segment_files: List[str], output_video: str,
+        source_video: str = None,
     ):
+        """Join zoom/plain segments into the edited video.
+
+        Preferred path (MISSION Phase 2.4/2.6): the segments partition the
+        whole source timeline and share identical encode params, so the
+        video streams stream-copy together (no generation loss), and the
+        audio is taken WHOLESALE from the source video — the per-segment
+        audio slices are discarded, so zoom boundaries cannot click or
+        drift. Falls back to the old full re-encode on any failure.
+        """
         import tempfile
         concat = tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", delete=False)
@@ -321,6 +332,29 @@ class VideoEditor:
             for f in segment_files:
                 concat.write(f"file '{f}'\n")
             concat.close()
+
+            if source_video and os.path.exists(source_video):
+                cmd = [
+                    "ffmpeg", "-y", "-loglevel", "error",
+                    "-f", "concat", "-safe", "0",
+                    "-i", concat.name,
+                    "-i", source_video,
+                    "-map", "0:v", "-map", "1:a?",
+                    "-c:v", "copy", "-c:a", "copy",
+                    "-movflags", "+faststart",
+                    output_video,
+                ]
+                r = subprocess.run(cmd, capture_output=True, text=True,
+                                   timeout=300)
+                if (r.returncode == 0 and os.path.exists(output_video)
+                        and os.path.getsize(output_video) > 1000):
+                    self.log_func("✅ Segments concatenated (stream copy + "
+                                  "intact source audio)")
+                    return
+                self.log_func(
+                    f"⚠ copy-concat failed, re-encoding instead: "
+                    f"{r.stderr[:200] if r.stderr else '?'}")
+
             cmd = [
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-f", "concat", "-safe", "0",
