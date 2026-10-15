@@ -700,26 +700,47 @@ Based on the video and dialogue above, produce that JSON now.
     ) -> bool:
         try:
             self.log_func("\n✂️  Applying trim (single-pass render) …")
+            # The trimmed file must keep EVERY audio track — the
+            # onomatopoeia detector re-extracts the mic (a:1) and game
+            # (a:2) tracks from it downstream. (First v2 run collapsed to
+            # one track and the detector fell back to the mixed master.)
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a",
+                 "-show_entries", "stream=index", "-of", "csv=p=0",
+                 input_video],
+                capture_output=True, text=True)
+            n_audio = max(1, len(probe.stdout.split()))
+
             parts = []
-            pair_labels = []
+            seg_labels = []
             for i, (start, end) in enumerate(segments_to_keep):
                 parts.append(
                     f"[0:v]trim=start={start:.3f}:end={end:.3f},"
-                    f"setpts=PTS-STARTPTS[v{i}];"
-                    f"[0:a]atrim=start={start:.3f}:end={end:.3f},"
-                    f"asetpts=PTS-STARTPTS[a{i}];"
-                )
-                pair_labels.append(f"[v{i}][a{i}]")
+                    f"setpts=PTS-STARTPTS[v{i}];")
+                labels = f"[v{i}]"
+                for k in range(n_audio):
+                    parts.append(
+                        f"[0:a:{k}]atrim=start={start:.3f}:end={end:.3f},"
+                        f"asetpts=PTS-STARTPTS[a{i}_{k}];")
+                    labels += f"[a{i}_{k}]"
+                seg_labels.append(labels)
+            out_labels = "[vout]" + "".join(
+                f"[aout{k}]" for k in range(n_audio))
             graph = (
                 "".join(parts)
-                + "".join(pair_labels)
-                + f"concat=n={len(segments_to_keep)}:v=1:a=1[vout][aout]"
+                + "".join(seg_labels)
+                + f"concat=n={len(segments_to_keep)}:v=1:a={n_audio}"
+                + out_labels
             )
             cmd = [
                 "ffmpeg", "-y",
                 "-i", input_video,
                 "-filter_complex", graph,
-                "-map", "[vout]", "-map", "[aout]",
+                "-map", "[vout]",
+            ]
+            for k in range(n_audio):
+                cmd += ["-map", f"[aout{k}]"]
+            cmd += [
                 "-c:v", "libx264", "-preset", "fast", "-crf", "18",
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "192k",
@@ -743,7 +764,7 @@ Based on the video and dialogue above, produce that JSON now.
                 return False
             self.log_func(
                 f"   ✅ Trim applied (single pass, {len(segments_to_keep)} "
-                f"segments, one continuous audio encode)")
+                f"segments, {n_audio} audio track(s), continuous audio)")
             return True
         except Exception as e:
             self.log_func(f"   ✗ single-pass render error: {e}")
