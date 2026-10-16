@@ -27,8 +27,15 @@ class VideoEditor:
     DEFAULT_CAMERA_REGION = {"x": 0.0, "y": 0.0, "w": 0.30, "h": 0.30}
     DEFAULT_GAMEPLAY_REGION = {"x": 0.25, "y": 0.25, "w": 0.50, "h": 0.50}
 
-    def __init__(self, log_func=None, camera_region=None, gameplay_region=None):
+    def __init__(self, log_func=None, camera_region=None, gameplay_region=None,
+                 effects=None):
         self.log_func = log_func or print
+        # Operator-tunable effects knobs (effects_settings), stamped into
+        # metadata by the processor so experiments can read them.
+        fx = effects or {}
+        self.zoom_intensity = max(0.0, float(fx.get("fx_zoom_intensity", 1.0)))
+        self.zoom_ramp_portion = min(1.0, max(0.05, float(
+            fx.get("fx_zoom_ramp_portion", 0.6))))
         self.camera_region = self._normalize_region(
             camera_region, self.DEFAULT_CAMERA_REGION)
         self.gameplay_region = self._normalize_region(
@@ -218,14 +225,15 @@ class VideoEditor:
         if duration <= 0:
             return "[0:v]scale=1080:1920,format=yuv420p[output]"
 
-        ramp_frames = max(1, int(duration * 60 * 0.60))
-        step = 0.15 / ramp_frames  # 1.50 → 1.65 over ramp_frames
+        ramp_frames = max(1, int(duration * 60 * self.zoom_ramp_portion))
+        base, delta = 1.50, 0.15 * self.zoom_intensity
+        hold = base + delta
+        step = max(delta, 1e-6) / ramp_frames
 
-        # After ramp, hold at 1.65
         z_expr = (
             f"if(lt(on,{ramp_frames}),"
-            f"min(1.65,if(eq(on,0),1.50,pzoom+{step:.6f})),"
-            f"1.65)"
+            f"min({hold:.4f},if(eq(on,0),{base:.4f},pzoom+{step:.6f})),"
+            f"{hold:.4f})"
         )
         x_expr, y_expr = self._focus_exprs(self._center(self.camera_region))
         return (
@@ -245,13 +253,15 @@ class VideoEditor:
         if duration <= 0:
             return "[0:v]scale=1080:1920,format=yuv420p[output]"
 
-        ramp_frames = max(1, int(duration * 60 * 0.60))
-        step = 0.25 / ramp_frames  # 1.30 → 1.55
+        ramp_frames = max(1, int(duration * 60 * self.zoom_ramp_portion))
+        base, delta = 1.30, 0.25 * self.zoom_intensity
+        hold = base + delta
+        step = max(delta, 1e-6) / ramp_frames
 
         z_expr = (
             f"if(lt(on,{ramp_frames}),"
-            f"min(1.55,if(eq(on,0),1.30,pzoom+{step:.6f})),"
-            f"1.55)"
+            f"min({hold:.4f},if(eq(on,0),{base:.4f},pzoom+{step:.6f})),"
+            f"{hold:.4f})"
         )
         x_expr, y_expr = self._focus_exprs(self._center(self.gameplay_region))
         return (

@@ -155,6 +155,8 @@ class VideoProcessor:
         sparse_cuts_enabled: bool = False,    # cap trim to ≤3 kept segments
         transcription_engine: str = "gemini",  # "gemini" | "whisper"
         identity=None,  # Optional[dict]: cut_id/batch_id/batch_index/batch_size
+        effects=None,   # Optional[dict]: fx_* knobs (effects_settings)
+        mixed_audio_mode: bool = False,  # diarization-split a mixed track
         onomatopoeia_enabled: bool = True,
         mic_track_index: str = "a:1",
         game_track_index: str = "a:2",
@@ -215,14 +217,29 @@ class VideoProcessor:
             if core.transcriber.convert_to_audio(
                 input_file, mic_audio_path, mic_track_index, log_func
             ):
-                (
-                    mic_transcriptions_raw,
-                    mic_transcriptions_adjusted,
-                ) = core.transcriber.transcribe_audio(
-                    "large", "cpu", mic_audio_path, True, log_func,
-                    "English", "Track 2 (Mic)",
-                    engine=transcription_engine,
-                )
+                if mixed_audio_mode:
+                    # Mixed-audio rescue: one diarized transcription of the
+                    # (mixed) mic track, split dominant-speaker → mic,
+                    # everyone else → desktop. The desktop track extraction
+                    # below is skipped in this mode.
+                    log_func("🎙  MIXED-AUDIO MODE: diarization-splitting "
+                             "the mic track")
+                    (
+                        mic_transcriptions_raw,
+                        mic_transcriptions_adjusted,
+                        desktop_transcriptions_raw,
+                        desktop_transcriptions_adjusted,
+                    ) = core.transcriber.transcribe_mixed_audio(
+                        mic_audio_path, log_func)
+                else:
+                    (
+                        mic_transcriptions_raw,
+                        mic_transcriptions_adjusted,
+                    ) = core.transcriber.transcribe_audio(
+                        "large", "cpu", mic_audio_path, True, log_func,
+                        "English", "Track 2 (Mic)",
+                        engine=transcription_engine,
+                    )
                 log_func(
                     f"✅ Mic transcription complete: "
                     f"{len(mic_transcriptions_raw)} words"
@@ -272,7 +289,10 @@ class VideoProcessor:
 
             desktop_audio_path = os.path.join(
                 temp_dir, f"{os.path.basename(input_file)}_desktop.wav")
-            if core.transcriber.convert_to_audio(
+            if mixed_audio_mode:
+                log_func("   (mixed-audio mode: desktop transcript came "
+                         "from the diarization split)")
+            elif core.transcriber.convert_to_audio(
                 input_file, desktop_audio_path, game_track_index, log_func
             ):
                 (
@@ -353,6 +373,7 @@ class VideoProcessor:
                     trimmer = IntelligentTrimmer(
                         log_func=log_func,
                         max_segments=3 if sparse_cuts_enabled else None,
+                        effects=effects,
                     )
                     trim_segments = trimmer.analyze_for_trim(
                         video_path=input_file,
@@ -418,7 +439,8 @@ class VideoProcessor:
                     temp_dir,
                     f"{os.path.basename(input_file)}_trimmed.mp4",
                 )
-                applier = IntelligentTrimmer(log_func=log_func)
+                applier = IntelligentTrimmer(log_func=log_func,
+                                             effects=effects)
                 trim_success = applier.apply_trim(
                     input_video=input_file,
                     output_video=trimmed_video_path,
@@ -570,6 +592,7 @@ class VideoProcessor:
                     log_func=log_func,
                     camera_region=camera_region,
                     gameplay_region=gameplay_region,
+                    effects=effects,
                 )
                 edited_video_path = os.path.join(
                     temp_dir,
@@ -606,7 +629,9 @@ class VideoProcessor:
                 from core.end_card import append_end_card, pick_end_card_text
                 card_text = pick_end_card_text(mic_transcriptions_adjusted)
                 if card_text:
-                    applied = append_end_card(output_file, card_text, log_func)
+                    applied = append_end_card(
+                        output_file, card_text, log_func,
+                        seconds=(effects or {}).get("fx_end_card_seconds"))
                     render_health["end_card"] = (
                         "applied" if applied else "failed")
                 else:
@@ -629,6 +654,8 @@ class VideoProcessor:
                 else (trim_segments or [])
             )
             editorial_decisions = {
+                "effects_settings": dict(effects or {}),
+                "mixed_audio_mode": bool(mixed_audio_mode),
                 "trim_segments_kept": [
                     [float(s), float(e)] for s, e in (final_trim_segments or [])
                 ],

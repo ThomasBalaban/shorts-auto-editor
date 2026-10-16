@@ -46,11 +46,35 @@ _settings: Dict[str, Any] = {
     # "gemini" (gemini-3.5-transcribe, diarization-capable) or "whisper".
     # Gemini auto-falls back to the whisper chain on any failure.
     "transcription_engine": "gemini",
+    # Diarization-split a fully-mixed recording (no separate tracks):
+    # dominant speaker → mic transcript, everyone else → desktop.
+    "mixed_audio_mode": False,
+    # Effects knobs (effects_settings) — stamped into each video's
+    # editorial_decisions so experiments can read them.
+    "fx_trim_target_min_s": 12.0,
+    "fx_trim_target_max_s": 45.0,
+    "fx_trim_max_pause_s": 1.5,
+    "fx_trim_end_within_s": 3.0,
+    "fx_pre_punch_beat_s": 1.5,
+    "fx_zoom_intensity": 1.0,
+    "fx_zoom_ramp_portion": 0.6,
+    "fx_end_card_seconds": 2.0,
     # Layout presets for zoom focus. Edited from the hub's "Layout" tab and
     # persisted to hub_settings.json via the launcher. Empty → legacy focus.
     "region_presets": [],
     "active_preset": "",
 }
+FX_KEYS = [
+    "fx_trim_target_min_s", "fx_trim_target_max_s", "fx_trim_max_pause_s",
+    "fx_trim_end_within_s", "fx_pre_punch_beat_s", "fx_zoom_intensity",
+    "fx_zoom_ramp_portion", "fx_end_card_seconds",
+]
+
+
+def _effects_from_settings() -> dict:
+    return {k: _settings[k] for k in FX_KEYS if k in _settings}
+
+
 _logs: deque = deque(maxlen=50000)
 _processing = False
 _stop_requested = False
@@ -311,6 +335,8 @@ def _processing_worker() -> None:
                     end_card_enabled=_settings["end_card_enabled"],
                     sparse_cuts_enabled=_settings["sparse_cuts_enabled"],
                     transcription_engine=_settings["transcription_engine"],
+                    effects=_effects_from_settings(),
+                    mixed_audio_mode=_settings["mixed_audio_mode"],
                     game_subtitles_enabled=_settings["game_subtitles_enabled"],
                     onomatopoeia_enabled=_settings["onomatopoeia_enabled"],
                     mic_track_index=_settings["mic_track_index"],
@@ -352,6 +378,8 @@ def _processing_worker() -> None:
                     end_card_enabled=_settings["end_card_enabled"],
                     sparse_cuts_enabled=_settings["sparse_cuts_enabled"],
                     transcription_engine=_settings["transcription_engine"],
+                    effects=_effects_from_settings(),
+                    mixed_audio_mode=_settings["mixed_audio_mode"],
                     game_subtitles_enabled=_settings["game_subtitles_enabled"],
                     onomatopoeia_enabled=_settings["onomatopoeia_enabled"],
                     mic_track_index=_settings["mic_track_index"],
@@ -431,6 +459,15 @@ class SubtitlerSettings(BaseModel):
     end_card_enabled: bool = False
     sparse_cuts_enabled: bool = False
     transcription_engine: str = "gemini"
+    mixed_audio_mode: bool = False
+    fx_trim_target_min_s: float = 12.0
+    fx_trim_target_max_s: float = 45.0
+    fx_trim_max_pause_s: float = 1.5
+    fx_trim_end_within_s: float = 3.0
+    fx_pre_punch_beat_s: float = 1.5
+    fx_zoom_intensity: float = 1.0
+    fx_zoom_ramp_portion: float = 0.6
+    fx_end_card_seconds: float = 2.0
 
 
 class FilesPayload(BaseModel):
@@ -598,6 +635,15 @@ def post_settings(s: SubtitlerSettings):
         "end_card_enabled": s.end_card_enabled,
         "sparse_cuts_enabled": s.sparse_cuts_enabled,
         "transcription_engine": s.transcription_engine if s.transcription_engine in ("gemini", "whisper") else "gemini",
+        "mixed_audio_mode": s.mixed_audio_mode,
+        "fx_trim_target_min_s": s.fx_trim_target_min_s,
+        "fx_trim_target_max_s": s.fx_trim_target_max_s,
+        "fx_trim_max_pause_s": s.fx_trim_max_pause_s,
+        "fx_trim_end_within_s": s.fx_trim_end_within_s,
+        "fx_pre_punch_beat_s": s.fx_pre_punch_beat_s,
+        "fx_zoom_intensity": s.fx_zoom_intensity,
+        "fx_zoom_ramp_portion": s.fx_zoom_ramp_portion,
+        "fx_end_card_seconds": s.fx_end_card_seconds,
     })
     if dir_changed:
         os.makedirs(s.output_dir, exist_ok=True)

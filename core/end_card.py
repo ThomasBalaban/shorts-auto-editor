@@ -38,13 +38,15 @@ def pick_end_card_text(mic_transcriptions: Optional[List[str]]) -> Optional[str]
     return None
 
 
-def append_end_card(video_path: str, text: str, log_func) -> bool:
+def append_end_card(video_path: str, text: str, log_func,
+                    seconds: float = None) -> bool:
     """Extend ``video_path`` in place: last frame frozen END_CARD_SECONDS
     with ``text`` centered over a dimmed band, audio padded with silence.
 
     Returns True on success; on any failure the original file is left
     exactly as it was.
     """
+    card_s = float(seconds) if seconds else END_CARD_SECONDS
     tmp_out = None
     text_file = None
     try:
@@ -64,7 +66,7 @@ def append_end_card(video_path: str, text: str, log_func) -> bool:
         tmp_out = f"{base}_endcard{ext}"
 
         vf = (
-            f"tpad=stop_mode=clone:stop_duration={END_CARD_SECONDS},"
+            f"tpad=stop_mode=clone:stop_duration={card_s},"
             f"drawbox=y=ih*0.42:h=ih*0.16:color=black@0.55:t=fill"
             f":enable='gte(t,{duration:.3f})',"
             f"drawtext=textfile='{text_file}':fontsize=h*0.045"
@@ -75,12 +77,12 @@ def append_end_card(video_path: str, text: str, log_func) -> bool:
         cmd = [
             "ffmpeg", "-y", "-i", video_path,
             "-vf", vf,
-            "-af", f"apad=pad_dur={END_CARD_SECONDS}",
+            "-af", f"apad=pad_dur={card_s}",
             "-c:v", "libx264", "-preset", "fast", "-crf", "18",
             "-c:a", "aac",
             tmp_out,
         ]
-        log_func(f"   🃏 Appending {END_CARD_SECONDS:.0f}s end card: “{text}”")
+        log_func(f"   🃏 Appending {card_s:.1f}s end card: “{text}”")
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0 or not os.path.exists(tmp_out) \
                 or os.path.getsize(tmp_out) == 0:

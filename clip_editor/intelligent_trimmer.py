@@ -45,7 +45,8 @@ from clip_editor.narrative_planner import (
 
 
 class IntelligentTrimmer:
-    def __init__(self, log_func=None, max_segments: Optional[int] = None):
+    def __init__(self, log_func=None, max_segments: Optional[int] = None,
+                 effects: Optional[dict] = None):
         self.log_func = log_func or print
         self.client = get_gemini_client()
         self.safety_settings = get_safety_settings()
@@ -54,6 +55,12 @@ class IntelligentTrimmer:
         # Sparse-cut mode (channel data: sparse 1-3 cuts is a winner
         # pattern; dense cutting is bottom-quintile). None = model's choice.
         self.max_segments = max_segments
+        fx = effects or {}
+        self.fx_target_min = float(fx.get("fx_trim_target_min_s", 12))
+        self.fx_target_max = float(fx.get("fx_trim_target_max_s", 45))
+        self.fx_max_pause = float(fx.get("fx_trim_max_pause_s", 1.5))
+        self.fx_end_within = float(fx.get("fx_trim_end_within_s", 3.0))
+        self.fx_pre_punch_beat = float(fx.get("fx_pre_punch_beat_s", 1.5))
         # Which render path the last apply_trim actually used
         # ("v2" | "v1_fallback" | "v1_pinned") — stamped into render_health.
         self.last_render_pipeline: Optional[str] = None
@@ -477,7 +484,7 @@ class IntelligentTrimmer:
         #  - Be concise; trust the model's reasoning
         return f"""=== VIDEO METADATA ===
 Total duration: {video_duration:.1f}s
-Target output: 12–45s
+Target output: {self.fx_target_min:.0f}–{self.fx_target_max:.0f}s
 
 {anchors_block}=== DIALOGUE TRANSCRIPTS ===
 PLAYER VOICE (microphone — the streamer's commentary):
@@ -509,15 +516,15 @@ there is extraordinary justification.
 STEP 3 — CUT AGGRESSIVELY, BUT PROTECT THE SILENCE BEAT
 Hard jump cuts between kept segments are fine and preferred for pacing.
 Delete:
-  - Any pause > 1.5s that isn't tension-building AND isn't the beat
+  - Any pause > {self.fx_max_pause:.1f}s that isn't tension-building AND isn't the beat
     directly before the punch point (see below)
-  - Trailing commentary after the punchline lands (end within ~3s of peak)
+  - Trailing commentary after the punchline lands (end within ~{self.fx_end_within:.0f}s of peak)
   - Repetitive phrases and filler
   - Multiple setup attempts — keep only the best one
   - Dead-air exploration / walking / menus unless they serve the setup
   - Pre-roll and post-roll chatter
 
-THE SILENCE BEAT (channel-proven rule): keep 1–2 seconds of quiet
+THE SILENCE BEAT (channel-proven rule): keep ~{self.fx_pre_punch_beat:.1f}s of quiet
 immediately BEFORE the punch point whenever the source has it. The breath
 of silence before the payoff is what makes it land — on this channel it is
 one of the strongest breakout correlates. Never start a cut so close to the
@@ -625,7 +632,7 @@ Based on the video and dialogue above, produce that JSON now.
             # starts less than 1.5s before it, the pre-punch tension beat
             # got amputated — extend the start to restore it (bounded by 0
             # and by the previous kept segment's end).
-            PRE_PUNCH_BEAT = 1.5
+            PRE_PUNCH_BEAT = self.fx_pre_punch_beat
             if punch is not None:
                 for i, (s, e) in enumerate(segments):
                     if s <= float(punch) <= e and float(punch) - s < PRE_PUNCH_BEAT:

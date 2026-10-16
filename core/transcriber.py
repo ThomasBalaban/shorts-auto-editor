@@ -363,14 +363,12 @@ def _openai_transcribe(audio_path: str, language: str,
                 pass
 
 
-def _gemini_transcribe(audio_path: str, language: str,
-                       is_mic_track: bool, track_name: str,
-                       log_func) -> List[str]:
+def _gemini_transcribe_words(audio_path: str, language: str,
+                             log_func) -> Optional[List[dict]]:
     """
     Call gemini-3.5-transcribe (verbatim mode, speaker diarization +
-    word-level timestamps) and return the same word-level timestamp
-    strings the Whisper path produces. Returns [] on any failure so the
-    caller falls through to OpenAI → local Whisper.
+    word-level timestamps) and return raw word dicts
+    [{text, start, end, speaker}, ...]. Returns None on any failure.
 
     Trial 2026-10-09 (3 real mic tracks): faster than whisper-1
     (2.0-3.4s vs 3.9-5.0s per 75s clip), higher word recall, and it
@@ -388,11 +386,11 @@ def _gemini_transcribe(audio_path: str, language: str,
         from utils.models import get_gemini_client
     except ImportError as e:
         log_func(f"⚠️  gemini transcribe unavailable ({e})")
-        return []
+        return None
 
     api_key = get_gemini_api_key()
     if not api_key:
-        return []
+        return None
 
     mp3_path = _to_mp3_for_api(audio_path, log_func)
     temp_mp3_created = mp3_path != audio_path
@@ -437,7 +435,7 @@ def _gemini_transcribe(audio_path: str, language: str,
         if resp.status_code != 200:
             log_func(f"⚠️  gemini transcribe HTTP {resp.status_code}: "
                      f"{resp.text[:300]}")
-            return []
+            return None
 
         payload = resp.json()
         annotations = []
@@ -448,19 +446,10 @@ def _gemini_transcribe(audio_path: str, language: str,
                     if a.get("type") == "word_info")
         if not annotations:
             log_func("⚠️  gemini transcribe returned no word annotations")
-            return []
-
-        # Speaker distribution — logged for the future primary-speaker
-        # filter decision; all words are kept in v1.
-        by_speaker: dict = {}
-        for a in annotations:
-            by_speaker[a.get("speaker", "?")] = (
-                by_speaker.get(a.get("speaker", "?"), 0) + 1)
-        log_func(f"✅ gemini transcribed {len(annotations)} words for "
-                 f"{track_name} | speakers: {by_speaker}")
+            return None
 
         MIN_WORD_S = 0.15  # guard against the API's zero-width words
-        transcriptions = []
+        words = []
         for a in annotations:
             text = (a.get("text") or "").strip()
             if not text:
@@ -472,20 +461,108 @@ def _gemini_transcribe(audio_path: str, language: str,
                 continue
             if end <= start:
                 end = start + MIN_WORD_S
-            if is_mic_track:
-                text = text.upper()
-            transcriptions.append(f"{start:.2f}-{end:.2f}: {text}")
-        return transcriptions
+            words.append({"text": text, "start": start, "end": end,
+                          "speaker": a.get("speaker", "?")})
+        return words
 
     except Exception as e:
         log_func(f"⚠️  gemini transcribe error: {type(e).__name__}: {e}")
-        return []
+        return None
     finally:
         if temp_mp3_created and os.path.exists(mp3_path):
             try:
                 os.remove(mp3_path)
             except Exception:
                 pass
+
+
+def _words_to_lines(words: List[dict], uppercase: bool) -> List[str]:
+    return [
+        f"{w['start']:.2f}-{w['end']:.2f}: "
+        f"{w['text'].upper() if uppercase else w['text']}"
+        for w in words
+    ]
+
+
+def _speaker_counts(words: List[dict]) -> dict:
+    by = {}
+    for w in words:
+        by[w["speaker"]] = by.get(w["speaker"], 0) + 1
+    return by
+
+
+def _gemini_transcribe(audio_path: str, language: str,
+                       is_mic_track: bool, track_name: str,
+                       log_func) -> List[str]:
+    """Word-level timestamp strings via gemini-3.5-transcribe.
+    [] on failure so the caller falls through to OpenAI → local Whisper."""
+    words = _gemini_transcribe_words(audio_path, language, log_func)
+    if not words:
+        return []
+    log_func(f"✅ gemini transcribed {len(words)} words for "
+             f"{track_name} | speakers: {_speaker_counts(words)}")
+    return _words_to_lines(words, uppercase=is_mic_track)
+
+
+_MIXED_CACHE: dict = {}
+
+
+def transcribe_mixed_audio(audio_path: str, log_func,
+                           language: str = "English"):
+    """Mixed-audio rescue (for recordings with no separate tracks).
+
+    One diarized gemini transcription of the mixed track, split by
+    speaker: the DOMINANT speaker (most words) is treated as the
+    streamer → mic transcript (uppercased, subtitle-style); every other
+    speaker (friends in voice chat, NPC lines the model picks up) →
+    desktop transcript. Falls back to the normal whisper-chain path with
+    an empty desktop transcript when diarization is unavailable.
+
+    Returns (mic_raw, mic_adjusted, desktop_raw, desktop_adjusted).
+    """
+    key = _audio_sha(audio_path)
+    cached = _MIXED_CACHE.get(key)
+    if cached is not None:
+        log_func("♻️  Mixed-audio transcription cache hit")
+        return tuple(list(x) for x in cached)
+
+    words = _gemini_transcribe_words(audio_path, language, log_func)
+    if not words:
+        log_func("⚠️  Mixed-audio mode: diarization unavailable — falling "
+                 "back to single-track transcription (empty desktop)")
+        mic_raw, mic_adj = transcribe_audio(
+            "large", "cpu", audio_path, True, log_func,
+            language, "Track 2 (Mic)", engine="whisper")
+        return mic_raw, mic_adj, [], []
+
+    counts = _speaker_counts(words)
+    dominant = max(counts, key=counts.get)
+    log_func(f"🎙  Mixed-audio split: speakers={counts} → dominant "
+             f"'{dominant}' becomes the mic transcript")
+
+    mic_words = [w for w in words if w["speaker"] == dominant]
+    other_words = [w for w in words if w["speaker"] != dominant]
+
+    def _post(lines, track_name):
+        if not lines:
+            return [], []
+        filtered = filter_hallucinations(
+            lines, audio_path, track_name, log_func)
+        raw = fix_overlapping_timestamps(list(filtered))
+        adjusted = fix_overlapping_timestamps(
+            apply_duration_adjustments(list(filtered), track_name, log_func))
+        return raw, adjusted
+
+    mic_raw, mic_adj = _post(
+        _words_to_lines(mic_words, uppercase=True), "Track 2 (Mic)")
+    desk_raw, desk_adj = _post(
+        _words_to_lines(other_words, uppercase=False), "Track 3 (Desktop)")
+
+    if len(_MIXED_CACHE) >= _TRANSCRIPTION_CACHE_MAX:
+        _MIXED_CACHE.clear()
+    _MIXED_CACHE[key] = (list(mic_raw), list(mic_adj),
+                         list(desk_raw), list(desk_adj))
+    return mic_raw, mic_adj, desk_raw, desk_adj
 
 
 def _local_transcribe(model_path: str, device: str,
