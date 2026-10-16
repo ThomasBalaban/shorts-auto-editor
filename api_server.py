@@ -59,6 +59,11 @@ _settings: Dict[str, Any] = {
     "fx_zoom_intensity": 1.0,
     "fx_zoom_ramp_portion": 0.6,
     "fx_end_card_seconds": 2.0,
+    # Phase 6 opt-in: overlay the strategist's experiment-backed knob
+    # directives (channel/<handle>.effects_directives artifact) over the
+    # manual values above. The thinker only proposes values justified by
+    # CONCLUDED experiments, and the editor clamps them to FX_BOUNDS.
+    "fx_thinker_control": False,
     # Layout presets for zoom focus. Edited from the hub's "Layout" tab and
     # persisted to hub_settings.json via the launcher. Empty → legacy focus.
     "region_presets": [],
@@ -70,9 +75,71 @@ FX_KEYS = [
     "fx_zoom_ramp_portion", "fx_end_card_seconds",
 ]
 
+# Hard safety bounds for thinker-proposed values — the thinker tunes
+# within these no matter what it says.
+FX_BOUNDS = {
+    "fx_trim_target_min_s": (5.0, 30.0),
+    "fx_trim_target_max_s": (15.0, 60.0),
+    "fx_trim_max_pause_s": (0.5, 4.0),
+    "fx_trim_end_within_s": (1.0, 8.0),
+    "fx_pre_punch_beat_s": (0.0, 4.0),
+    "fx_zoom_intensity": (0.3, 2.5),
+    "fx_zoom_ramp_portion": (0.1, 0.95),
+    "fx_end_card_seconds": (1.0, 4.0),
+}
+
+_EFFECTS_DIRECTIVES_PATH = os.path.join(
+    _HERE, "..", "shorts_strategist", "output", "recommendations",
+    "channel")
+
 
 def _effects_from_settings() -> dict:
-    return {k: _settings[k] for k in FX_KEYS if k in _settings}
+    fx = {k: _settings[k] for k in FX_KEYS if k in _settings}
+    fx["fx_source"] = "manual"
+    if not _settings.get("fx_thinker_control"):
+        return fx
+    # Thinker Tuning: overlay experiment-backed directives, clamped.
+    try:
+        from analyzer_client import CHANNEL_HANDLE
+        import json as _json
+        path = os.path.join(
+            _EFFECTS_DIRECTIVES_PATH,
+            f"{CHANNEL_HANDLE}.effects_directives.json")
+        with open(path, "r", encoding="utf-8") as f:
+            payload = _json.load(f).get("payload") or {}
+        if payload.get("skipped_by_operator"):
+            raise FileNotFoundError("stub artifact")
+        directives = payload.get("directives") or {}
+        applied = {}
+        for k, d in directives.items():
+            if k not in FX_BOUNDS or not isinstance(d, dict):
+                continue
+            lo, hi = FX_BOUNDS[k]
+            try:
+                v = min(hi, max(lo, float(d.get("value"))))
+            except (TypeError, ValueError):
+                continue
+            fx[k] = v
+            applied[k] = {"value": v,
+                          "justified_by": d.get("justified_by")}
+        if applied:
+            # Keep min < max whatever the overlay did.
+            if fx["fx_trim_target_min_s"] >= fx["fx_trim_target_max_s"]:
+                fx["fx_trim_target_min_s"] = min(
+                    fx["fx_trim_target_min_s"], fx["fx_trim_target_max_s"] - 5)
+            fx["fx_source"] = "thinker"
+            fx["fx_thinker_applied"] = applied
+            _log(f"🧠 Thinker Tuning active — overlaid {len(applied)} "
+                 f"knob(s): {sorted(applied)}")
+        else:
+            _log("🧠 Thinker Tuning on, but no applicable directives — "
+                 "using manual values")
+    except FileNotFoundError:
+        _log("🧠 Thinker Tuning on, but no effects_directives artifact "
+             "yet (needs concluded experiments) — using manual values")
+    except Exception as e:
+        _log(f"🧠 Thinker Tuning overlay failed (using manual): {e}")
+    return fx
 
 
 _logs: deque = deque(maxlen=50000)
@@ -468,6 +535,7 @@ class SubtitlerSettings(BaseModel):
     fx_zoom_intensity: float = 1.0
     fx_zoom_ramp_portion: float = 0.6
     fx_end_card_seconds: float = 2.0
+    fx_thinker_control: bool = False
 
 
 class FilesPayload(BaseModel):
@@ -644,6 +712,7 @@ def post_settings(s: SubtitlerSettings):
         "fx_zoom_intensity": s.fx_zoom_intensity,
         "fx_zoom_ramp_portion": s.fx_zoom_ramp_portion,
         "fx_end_card_seconds": s.fx_end_card_seconds,
+        "fx_thinker_control": s.fx_thinker_control,
     })
     if dir_changed:
         os.makedirs(s.output_dir, exist_ok=True)

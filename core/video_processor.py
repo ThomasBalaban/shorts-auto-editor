@@ -290,8 +290,39 @@ class VideoProcessor:
             desktop_audio_path = os.path.join(
                 temp_dir, f"{os.path.basename(input_file)}_desktop.wav")
             if mixed_audio_mode:
-                log_func("   (mixed-audio mode: desktop transcript came "
-                         "from the diarization split)")
+                # Friends' diarized words already occupy the desktop slot.
+                # When a REAL game track exists separately (mic line shared
+                # with Discord, game on its own track), transcribe it too
+                # and merge — everything that isn't the streamer belongs in
+                # the desktop transcript.
+                if (game_track_index != mic_track_index
+                        and core.transcriber.convert_to_audio(
+                            input_file, desktop_audio_path,
+                            game_track_index, log_func)):
+                    game_raw, game_adj = core.transcriber.transcribe_audio(
+                        "large", "cpu", desktop_audio_path, True, log_func,
+                        "English", "Track 3 (Desktop)",
+                        engine=transcription_engine,
+                    )
+                    from utils.timestamp_processor import (
+                        merge_timestamp_lines)
+                    n_voice = len(desktop_transcriptions_raw)
+                    desktop_transcriptions_raw = merge_timestamp_lines(
+                        desktop_transcriptions_raw, game_raw)
+                    desktop_transcriptions_adjusted = merge_timestamp_lines(
+                        desktop_transcriptions_adjusted, game_adj)
+                    log_func(
+                        f"   🎙  Mixed-audio desktop transcript: {n_voice} "
+                        f"voice-chat words + {len(game_raw)} game-track "
+                        f"words merged")
+                    try:
+                        os.remove(desktop_audio_path)
+                    except Exception:
+                        pass
+                else:
+                    log_func("   (mixed-audio mode: desktop transcript is "
+                             "the diarization split only — no separate "
+                             "game track)")
             elif core.transcriber.convert_to_audio(
                 input_file, desktop_audio_path, game_track_index, log_func
             ):

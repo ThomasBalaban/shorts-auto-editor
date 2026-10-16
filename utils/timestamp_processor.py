@@ -155,6 +155,19 @@ def format_timestamp_line(start_time, end_time, text):
     return f"{start_time:.2f}-{end_time:.2f}: {text}"
 
 
+def merge_timestamp_lines(a: List[str], b: List[str]) -> List[str]:
+    """Merge two 'S-E: text' line lists into one, ordered by start time.
+
+    Used by mixed-audio mode to combine Discord participants' diarized
+    words with the real game track's transcription — both are
+    "not the streamer" and share the desktop transcript slot.
+    """
+    def _key(line: str):
+        parsed = parse_timestamp_line(line)
+        return parsed[0] if parsed else 0.0
+    return sorted(list(a) + list(b), key=_key)
+
+
 def group_words_into_utterances(
     transcriptions: List[str],
     gap_threshold: float = 0.6,
