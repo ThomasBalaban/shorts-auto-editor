@@ -42,6 +42,7 @@ _settings: Dict[str, Any] = {
     # Experiment primitives (capability-gaps artifact, 2026-10) — both
     # default OFF; flip per batch and judge on YouTube analytics.
     "end_card_enabled": False,
+    "punch_freeze_enabled": False,
     "sparse_cuts_enabled": False,
     # "gemini" (gemini-3.5-transcribe, diarization-capable) or "whisper".
     # Gemini auto-falls back to the whisper chain on any failure.
@@ -59,6 +60,7 @@ _settings: Dict[str, Any] = {
     "fx_zoom_intensity": 1.0,
     "fx_zoom_ramp_portion": 0.6,
     "fx_end_card_seconds": 2.0,
+    "fx_punch_freeze_s": 0.5,
     # Phase 6 opt-in: overlay the strategist's experiment-backed knob
     # directives (channel/<handle>.effects_directives artifact) over the
     # manual values above. The thinker only proposes values justified by
@@ -72,7 +74,7 @@ _settings: Dict[str, Any] = {
 FX_KEYS = [
     "fx_trim_target_min_s", "fx_trim_target_max_s", "fx_trim_max_pause_s",
     "fx_trim_end_within_s", "fx_pre_punch_beat_s", "fx_zoom_intensity",
-    "fx_zoom_ramp_portion", "fx_end_card_seconds",
+    "fx_zoom_ramp_portion", "fx_end_card_seconds", "fx_punch_freeze_s",
 ]
 
 # Hard safety bounds for thinker-proposed values — the thinker tunes
@@ -86,6 +88,7 @@ FX_BOUNDS = {
     "fx_zoom_intensity": (0.3, 2.5),
     "fx_zoom_ramp_portion": (0.1, 0.95),
     "fx_end_card_seconds": (1.0, 4.0),
+    "fx_punch_freeze_s": (0.2, 1.5),
 }
 
 _EFFECTS_DIRECTIVES_PATH = os.path.join(
@@ -411,6 +414,7 @@ def _processing_worker() -> None:
                     camera_mode=_camera_mode(),
                     mic_subtitles_enabled=_settings["mic_subtitles_enabled"],
                     end_card_enabled=_settings["end_card_enabled"],
+                    punch_freeze_enabled=_settings["punch_freeze_enabled"],
                     sparse_cuts_enabled=_settings["sparse_cuts_enabled"],
                     transcription_engine=_settings["transcription_engine"],
                     effects=_effects_from_settings(),
@@ -454,6 +458,7 @@ def _processing_worker() -> None:
                     camera_mode=_camera_mode(),
                     mic_subtitles_enabled=_settings["mic_subtitles_enabled"],
                     end_card_enabled=_settings["end_card_enabled"],
+                    punch_freeze_enabled=_settings["punch_freeze_enabled"],
                     sparse_cuts_enabled=_settings["sparse_cuts_enabled"],
                     transcription_engine=_settings["transcription_engine"],
                     effects=_effects_from_settings(),
@@ -535,6 +540,7 @@ class SubtitlerSettings(BaseModel):
     mic_track_index: str = "a:1"
     game_track_index: str = "a:2"
     end_card_enabled: bool = False
+    punch_freeze_enabled: bool = False
     sparse_cuts_enabled: bool = False
     transcription_engine: str = "gemini"
     mixed_audio_mode: bool = False
@@ -546,6 +552,7 @@ class SubtitlerSettings(BaseModel):
     fx_zoom_intensity: float = 1.0
     fx_zoom_ramp_portion: float = 0.6
     fx_end_card_seconds: float = 2.0
+    fx_punch_freeze_s: float = 0.5
     fx_thinker_control: bool = False
 
 
@@ -712,6 +719,7 @@ def post_settings(s: SubtitlerSettings):
         "mic_track_index": s.mic_track_index,
         "game_track_index": s.game_track_index,
         "end_card_enabled": s.end_card_enabled,
+        "punch_freeze_enabled": s.punch_freeze_enabled,
         "sparse_cuts_enabled": s.sparse_cuts_enabled,
         "transcription_engine": s.transcription_engine if s.transcription_engine in ("gemini", "whisper") else "gemini",
         "mixed_audio_mode": s.mixed_audio_mode,
@@ -723,6 +731,7 @@ def post_settings(s: SubtitlerSettings):
         "fx_zoom_intensity": s.fx_zoom_intensity,
         "fx_zoom_ramp_portion": s.fx_zoom_ramp_portion,
         "fx_end_card_seconds": s.fx_end_card_seconds,
+        "fx_punch_freeze_s": s.fx_punch_freeze_s,
         "fx_thinker_control": s.fx_thinker_control,
     })
     if dir_changed:
