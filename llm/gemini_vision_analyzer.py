@@ -155,16 +155,142 @@ class GeminiVisionAnalyzer:
             return analysis
 
     # ── Event-map orchestration ────────────────────────────────────────────
+    # Batch size: 12 moments x 2 frames = 24 images per request, well
+    # within limits at MEDIA_RESOLUTION_LOW. One call instead of twelve
+    # (MISSION Phase 2.3).
+    BATCH_MOMENTS = 12
+    FRAMES_PER_MOMENT_BATCHED = 2
+
     def analyze_video_at_timestamps(
         self,
         video_path: str,
         events: List[Dict],
         window_duration: float = 5.0,
     ) -> Dict[float, Dict]:
+        """{event_time: analysis} for all events.
+
+        Batched: moments are grouped into one Gemini call per
+        BATCH_MOMENTS (the old code made one call per event — dozens per
+        clip). Any failed chunk falls back to the per-event path.
         """
-        Run vision analysis once per event and return a
-        {event_time: analysis} map keyed by each event's original time.
-        """
+        if len(events) > 1:
+            analysis_map: Dict[float, Dict] = {}
+            for i in range(0, len(events), self.BATCH_MOMENTS):
+                chunk = events[i:i + self.BATCH_MOMENTS]
+                try:
+                    got = self._analyze_chunk_batched(
+                        video_path, chunk, window_duration)
+                except Exception as e:
+                    self.log_func(f"   ⚠ batched vision failed ({e}) — "
+                                  f"per-event fallback for {len(chunk)}")
+                    got = None
+                if got is None:
+                    got = self._analyze_per_event(
+                        video_path, chunk, window_duration)
+                analysis_map.update(got)
+            return analysis_map
+        return self._analyze_per_event(video_path, events, window_duration)
+
+    def _analyze_chunk_batched(
+        self, video_path: str, events: List[Dict],
+        window_duration: float,
+    ):
+        """One Gemini call for up to BATCH_MOMENTS moments. Returns the
+        {time: analysis} map, or None when the response is unusable."""
+        moments = []
+        for idx, event in enumerate(events, start=1):
+            start_time = max(0.0, event["time"] - 2.0)
+            saved = self.num_frames_for_caption
+            self.num_frames_for_caption = self.FRAMES_PER_MOMENT_BATCHED
+            try:
+                frames = self.extract_frames_from_video(
+                    video_path, start_time, window_duration)
+            finally:
+                self.num_frames_for_caption = saved
+            if frames:
+                moments.append((idx, event["time"], frames))
+        if not moments:
+            return {}
+
+        prompt = (
+            "You are a video game scene analyzer. Below are "
+            f"{len(moments)} separate MOMENTS from one gameplay clip, "
+            "each shown as a short sequence of frames. Ignore UI "
+            "elements and facecam overlays.\n\n"
+            "For EVERY moment, produce one object with exactly four "
+            "keys:\n"
+            '- "moment": the moment number as given\n'
+            '- "caption": one concise sentence describing the primary '
+            "gameplay action in that moment\n"
+            '- "scene_context": a list of environmental keywords (include '
+            '"underwater" when underwater; may be empty)\n'
+            '- "intensity": exactly one of "epic" (kill, boss, explosion, '
+            'narrow escape, reveal, major damage), "suspenseful" (tense or '
+            'eerie dread, threat building, ominous quiet), or "normal" '
+            "(ordinary gameplay, menus, idle traversal).\n\n"
+            "Respond with ONLY a JSON array containing one object per "
+            "moment, in order."
+        )
+        contents: List = [prompt]
+        for idx, _t, frames in moments:
+            contents.append(f"MOMENT {idx}:")
+            contents.extend(frames)
+
+        response = self.client.models.generate_content(
+            model=MODEL_FLASH,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                safety_settings=self.safety_settings,
+                thinking_config=types.ThinkingConfig(
+                    thinking_level=THINKING_VISION,
+                ),
+                media_resolution=MEDIA_RES_VISION,
+                response_mime_type="application/json",
+            ),
+        )
+        if not response or not getattr(response, "text", None):
+            return None
+        raw = response.text.strip().replace("```json", "").replace("```", "")
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            return None
+        by_moment = {}
+        for item in parsed:
+            if isinstance(item, dict) and item.get("moment") is not None:
+                try:
+                    by_moment[int(item["moment"])] = item
+                except (TypeError, ValueError):
+                    continue
+        out: Dict[float, Dict] = {}
+        matched = 0
+        for idx, t, _frames in moments:
+            item = by_moment.get(idx)
+            if not item or not item.get("caption"):
+                continue
+            matched += 1
+            intensity = str(item.get("intensity", "normal")).strip().lower()
+            if intensity not in ("epic", "suspenseful", "normal"):
+                intensity = "normal"
+            out[t] = {
+                "video_caption": item.get("caption", ""),
+                "scene_context": set(item.get("scene_context") or []),
+                "intensity": intensity,
+                "confidence": 0.95,
+            }
+        if matched < max(1, len(moments) // 2):
+            return None  # too lossy — let the per-event path redo the chunk
+        self.log_func(
+            f"   🎬 Batched vision: {matched}/{len(moments)} moments in "
+            f"ONE call")
+        return out
+
+    def _analyze_per_event(
+        self,
+        video_path: str,
+        events: List[Dict],
+        window_duration: float = 5.0,
+    ) -> Dict[float, Dict]:
+        """Original one-call-per-event path (fallback)."""
         analysis_map: Dict[float, Dict] = {}
         for event in events:
             event_time = event["time"]
