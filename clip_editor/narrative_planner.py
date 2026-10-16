@@ -177,6 +177,7 @@ class NarrativePlanner:
         video_duration: float,
         mic_transcriptions: Optional[List[str]] = None,
         desktop_transcriptions: Optional[List[str]] = None,
+        shared_upload=None,  # utils.gemini_files.SharedVideoUpload
     ) -> Optional[dict]:
         """Produce a narrative plan, or None on any failure.
 
@@ -204,6 +205,21 @@ class NarrativePlanner:
                 )
                 response = self._generate_inline(
                     video_path, mime_type, prompt,
+                )
+            elif shared_upload is not None:
+                self.log_func(
+                    f"🧭 Planning narrative beats via SHARED upload "
+                    f"({file_size_mb:.1f} MB, {mime_type})"
+                )
+                response = self.client.models.generate_content(
+                    model=MODEL_PRO,
+                    contents=[prompt, shared_upload.part()],
+                    config=types.GenerateContentConfig(
+                        safety_settings=self.safety_settings,
+                        thinking_config=types.ThinkingConfig(
+                            thinking_level=THINKING_TRIM,
+                        ),
+                    ),
                 )
             else:
                 self.log_func(

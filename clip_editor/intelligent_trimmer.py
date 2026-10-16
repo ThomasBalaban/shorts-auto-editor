@@ -81,6 +81,7 @@ class IntelligentTrimmer:
         mic_transcriptions: Optional[List[str]] = None,
         desktop_transcriptions: Optional[List[str]] = None,
         narrative_plan: Optional[dict] = None,
+        shared_upload=None,  # utils.gemini_files.SharedVideoUpload
     ) -> List[Tuple[float, float]]:
         """Pick segments to keep.
 
@@ -100,6 +101,7 @@ class IntelligentTrimmer:
                 mic_transcriptions,
                 desktop_transcriptions,
                 narrative_plan,
+                shared_upload=shared_upload,
             )
         except Exception as e:
             self.log_func(f"❌ Trim analysis failed: {e}")
@@ -159,6 +161,7 @@ class IntelligentTrimmer:
         mic_transcriptions,
         desktop_transcriptions,
         narrative_plan: Optional[dict] = None,
+        shared_upload=None,
     ) -> List[Tuple[float, float]]:
         try:
             mime_type = self._mime_type_for(video_path)
@@ -181,6 +184,29 @@ class IntelligentTrimmer:
                 return self._trim_via_inline(
                     video_path, mime_type, prompt, video_duration,
                     narrative_plan,
+                )
+            elif shared_upload is not None:
+                self.log_func(
+                    f"\n📤 Trim via SHARED upload "
+                    f"({file_size_mb:.1f} MB, {mime_type}) — no re-upload"
+                )
+                file_part = shared_upload.part()
+
+                def _generate(prompt_text: str):
+                    return self.client.models.generate_content(
+                        model=MODEL_PRO,
+                        contents=[prompt_text, file_part],
+                        config=types.GenerateContentConfig(
+                            safety_settings=self.safety_settings,
+                            thinking_config=types.ThinkingConfig(
+                                thinking_level=THINKING_TRIM,
+                            ),
+                            media_resolution=MEDIA_RES_TRIM,
+                        ),
+                    )
+
+                return self._gemini_with_anchor_validation(
+                    _generate, prompt, video_duration, narrative_plan,
                 )
             else:
                 self.log_func(

@@ -379,6 +379,21 @@ class VideoProcessor:
                 # failure. When narrative_plan is None the trimmer behaves
                 # exactly as before this feature was added.
                 narrative_plan = None
+
+                # ONE Files-API upload shared by the planner and the
+                # trimmer (they used to upload the same video separately,
+                # per iteration). Only needed above the inline threshold.
+                shared_upload = None
+                if (enable_trimming and os.path.getsize(input_file)
+                        > IntelligentTrimmer.INLINE_MAX_BYTES):
+                    from utils.gemini_files import SharedVideoUpload
+                    from utils.models import get_gemini_client
+                    shared_upload = SharedVideoUpload(
+                        get_gemini_client(), input_file,
+                        "video/x-matroska" if input_file.lower().endswith(
+                            ".mkv") else "video/mp4",
+                        log_func)
+
                 if enable_trimming and is_planner_enabled():
                     log_func("\n--- PHASE 1b: Narrative Planning ---")
                     try:
@@ -389,6 +404,7 @@ class VideoProcessor:
                             video_duration=source_video_duration,
                             mic_transcriptions=mic_transcriptions_raw,
                             desktop_transcriptions=desktop_transcriptions_raw,
+                            shared_upload=shared_upload,
                         )
                     except Exception as e:
                         log_func(f"⚠️ Narrative planner crashed: {e}")
@@ -406,12 +422,17 @@ class VideoProcessor:
                         max_segments=3 if sparse_cuts_enabled else None,
                         effects=effects,
                     )
-                    trim_segments = trimmer.analyze_for_trim(
-                        video_path=input_file,
-                        mic_transcriptions=mic_transcriptions_raw,
-                        desktop_transcriptions=desktop_transcriptions_raw,
-                        narrative_plan=narrative_plan,
-                    )
+                    try:
+                        trim_segments = trimmer.analyze_for_trim(
+                            video_path=input_file,
+                            mic_transcriptions=mic_transcriptions_raw,
+                            desktop_transcriptions=desktop_transcriptions_raw,
+                            narrative_plan=narrative_plan,
+                            shared_upload=shared_upload,
+                        )
+                    finally:
+                        if shared_upload is not None:
+                            shared_upload.delete()
                     if trim_segments:
                         total_kept = sum(e - s for s, e in trim_segments)
                         log_func(
