@@ -151,17 +151,26 @@ _session_log_path: str = ""
 _session_log_lock = threading.Lock()
 
 
-def _load_settings() -> None:
+def _load_settings(only_keys=None) -> None:
+    """Merge saved settings from hub_settings.json into _settings.
+
+    ``only_keys`` limits the merge — the batch-start refresh passes the
+    layout keys only, so settings POSTed by the UI for THIS run are not
+    clobbered by older persisted values (Start Processing = run with the
+    panel as shown; Save Settings = persist as defaults).
+    """
     if not os.path.exists(SETTINGS_FILE):
         return
     try:
         import json
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
             saved = json.load(f)
-        for k in _settings:
-            if k in saved:
+        for k in (only_keys if only_keys is not None else _settings):
+            if k in saved and k in _settings:
                 _settings[k] = saved[k]
-        print(f"[settings] Loaded from {SETTINGS_FILE}", flush=True)
+        print(f"[settings] Loaded from {SETTINGS_FILE}"
+              + (f" (keys: {list(only_keys)})" if only_keys else ""),
+              flush=True)
     except Exception as e:
         print(f"[settings] Could not load {SETTINGS_FILE}: {e}", flush=True)
 
@@ -266,9 +275,11 @@ def _processing_worker() -> None:
         _processing = False
         return
 
-    # Re-read settings from disk so layout presets saved via the launcher
-    # (while this API was already running) are picked up for this batch.
-    _load_settings()
+    # Re-read ONLY the layout presets from disk (saved via the launcher
+    # while this API was running). Operational toggles stay as POSTed by
+    # the UI at Start Processing — per-run settings must not be clobbered
+    # by older persisted defaults.
+    _load_settings(("region_presets", "active_preset"))
     camera_region, gameplay_region = _resolve_regions()
     layout = _resolve_layout()
 
