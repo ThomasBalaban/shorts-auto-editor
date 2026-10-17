@@ -46,7 +46,17 @@ class SpecialistResponse:
 
 @dataclass
 class TimelineEvent:
-    """Represents a single editing decision in the final timeline."""
+    """Represents a single editing decision in the final timeline.
+
+    ``style`` and ``amount`` are the zoom grammar (2026-10-17): HOW a
+    zoom arrives and how far it goes. They are tracked end-to-end
+    (metadata zoom_timeline → strategist → strategy.db) so the thinker
+    can learn which style works in which scenario.
+      style:  "cut"  — instant at full zoom (comedy smash-cut)
+              "snap" — fast ramp from 1.0 (~0.25s punch-in)
+              "push" — slow ease from 1.0 (creeping dread)
+      amount: "subtle" | "medium" | "hard" — zoom depth band
+    """
     timestamp: float
     action: Literal[
         "zoom_to_cam", "zoom_to_game", "zoom_out", "no_action",
@@ -56,6 +66,9 @@ class TimelineEvent:
     reason: str
     confidence: float
     source_task_id: Optional[str] = None
+    style: str = "snap"
+    amount: str = "medium"
+    style_reason: str = ""
 
 
 # --- Candidate Model (content-driven director) ---
@@ -105,10 +118,46 @@ class ZoomCandidate:
         return KIND_TO_DURATION.get(self.kind, 2.0)
 
     def to_timeline_event(self) -> "TimelineEvent":
+        style, amount, style_reason = style_for(self.kind, self.score)
         return TimelineEvent(
             timestamp=self.t_peak,
             action=self.action,          # type: ignore[arg-type]
             duration=self.duration,
             reason=self.reason or self.kind,
             confidence=self.score,
+            style=style,
+            amount=amount,
+            style_reason=style_reason,
         )
+
+
+# ── Zoom style rules (v1, heuristic) ─────────────────────────────────────────
+# Content-driven defaults, deliberately simple and fully tracked: every
+# event records which rule fired (style_reason) so outcome data can later
+# promote or demote these choices per scenario. Version bump the tag when
+# the rules change so eras stay comparable.
+STYLE_RULES_VERSION = "v1"
+
+
+def style_for(kind: str, score: float):
+    """(style, amount, style_reason) for a zoom candidate."""
+    v = STYLE_RULES_VERSION
+    if kind == "cam_reaction":
+        if score >= 0.80:
+            return "cut", "hard", f"{v}: high-confidence reaction → smash cut"
+        if score >= 0.65:
+            return "snap", "medium", f"{v}: solid reaction → fast punch-in"
+        return "push", "subtle", f"{v}: soft reaction → gentle push"
+    if kind == "game_epic":
+        if score >= 0.75:
+            return "snap", "hard", f"{v}: big game beat → hard snap"
+        return "snap", "medium", f"{v}: game beat → medium snap"
+    if kind == "game_suspense":
+        if score >= 0.75:
+            return "push", "medium", f"{v}: strong dread → slow push deeper"
+        return "push", "subtle", f"{v}: suspense → slow subtle push"
+    if kind == "awkward":
+        if score >= 0.80:
+            return "cut", "medium", f"{v}: hard awkward → comedy cut-out"
+        return "push", "medium", f"{v}: awkward → eased pull-back"
+    return "snap", "medium", f"{v}: default"

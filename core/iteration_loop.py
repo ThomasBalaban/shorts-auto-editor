@@ -211,6 +211,9 @@ def _timeline_from_decisions(decisions: Dict[str, Any]) -> List[TimelineEvent]:
                 duration=float(d.get("duration", 1.5) or 1.5),
                 reason=str(d.get("reason") or ""),
                 confidence=float(d.get("confidence", 0.5) or 0.5),
+                style=str(d.get("style") or "snap"),
+                amount=str(d.get("amount") or "medium"),
+                style_reason=str(d.get("style_reason") or ""),
             ))
         except (TypeError, ValueError):
             continue

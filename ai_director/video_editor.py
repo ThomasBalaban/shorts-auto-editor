@@ -171,12 +171,14 @@ class VideoEditor:
             open(output_file, "wb").close()
             return
 
+        style = getattr(event, "style", "snap") or "snap"
+        amount = getattr(event, "amount", "medium") or "medium"
         if event.action == "zoom_out":
-            filter_str = self._zoom_out_filter(dur)
+            filter_str = self._zoom_out_filter(dur, style, amount)
         elif event.action in ("zoom_to_cam", "zoom_to_cam_reaction"):
-            filter_str = self._cam_zoom_filter(dur)
+            filter_str = self._cam_zoom_filter(dur, style, amount)
         elif event.action == "zoom_to_game":
-            filter_str = self._game_zoom_filter(dur)
+            filter_str = self._game_zoom_filter(dur, style, amount)
         else:
             self._extract_plain_segment(input_video, output_file, segment)
             return
@@ -215,27 +217,42 @@ class VideoEditor:
     # Strategy: zoom ramps up over the first 60 % of frames, then holds.
     # This gives a punchy "snap" rather than a slow drift.
 
-    def _cam_zoom_filter(self, duration: float) -> str:
-        """
-        Punch-in on the configured camera region.
-        1.50 → 1.65  (was 1.50 → 1.575)
-        Ramp completes in 60 % of segment duration.
-        Focus follows ``self.camera_region`` (legacy default: top-left).
-        """
+    # Zoom grammar (2026-10-17): style × amount, chosen per event by the
+    # director's style rules and tracked end-to-end for the thinker.
+    #   style  "cut"  — whole segment at the target zoom (smash cut)
+    #          "snap" — ramp 1.0 → target over ~0.25s, then hold
+    #          "push" — ramp 1.0 → target over zoom_ramp_portion of the
+    #                   segment (slow creep), then hold
+    #   amount multiplies the action's base depth, then fx_zoom_intensity.
+    AMOUNT_MULT = {"subtle": 0.6, "medium": 1.0, "hard": 1.6}
+    CAM_BASE_DELTA = 0.60    # medium cam target ≈ 1.60
+    GAME_BASE_DELTA = 0.45   # medium game target ≈ 1.45
+    MAX_TARGET = 2.0
+    SNAP_SECONDS = 0.25
+
+    def _zoom_in_filter(self, duration: float, style: str, amount: str,
+                        base_delta: float, center) -> str:
         if duration <= 0:
             return "[0:v]scale=1080:1920,format=yuv420p[output]"
+        mult = self.AMOUNT_MULT.get(amount, 1.0)
+        target = min(self.MAX_TARGET,
+                     1.0 + base_delta * mult * self.zoom_intensity)
 
-        ramp_frames = max(1, int(duration * 60 * self.zoom_ramp_portion))
-        base, delta = 1.50, 0.15 * self.zoom_intensity
-        hold = base + delta
-        step = max(delta, 1e-6) / ramp_frames
-
-        z_expr = (
-            f"if(lt(on,{ramp_frames}),"
-            f"min({hold:.4f},if(eq(on,0),{base:.4f},pzoom+{step:.6f})),"
-            f"{hold:.4f})"
-        )
-        x_expr, y_expr = self._focus_exprs(self._center(self.camera_region))
+        if style == "cut":
+            z_expr = f"{target:.4f}"
+        else:
+            if style == "snap":
+                ramp_frames = max(1, int(self.SNAP_SECONDS * 60))
+            else:  # push
+                ramp_frames = max(1, int(
+                    duration * 60 * self.zoom_ramp_portion))
+            step = (target - 1.0) / ramp_frames
+            z_expr = (
+                f"if(lt(on,{ramp_frames}),"
+                f"min({target:.4f},if(eq(on,0),1.0,pzoom+{step:.6f})),"
+                f"{target:.4f})"
+            )
+        x_expr, y_expr = self._focus_exprs(center)
         return (
             "[0:v]setpts=PTS-STARTPTS,"
             f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
@@ -243,49 +260,46 @@ class VideoEditor:
             "format=yuv420p[output]"
         )
 
-    def _game_zoom_filter(self, duration: float) -> str:
-        """
-        Punch-in on the configured gameplay region.
-        1.30 → 1.55  (was 1.33 → 1.46)
-        Ramp completes in 60 % of segment duration.
-        Focus follows ``self.gameplay_region`` (legacy default: frame centre).
-        """
+    def _cam_zoom_filter(self, duration: float, style: str = "snap",
+                         amount: str = "medium") -> str:
+        """Punch-in on the camera region (style/amount per event)."""
+        return self._zoom_in_filter(
+            duration, style, amount, self.CAM_BASE_DELTA,
+            self._center(self.camera_region))
+
+    def _game_zoom_filter(self, duration: float, style: str = "snap",
+                          amount: str = "medium") -> str:
+        """Punch-in on the gameplay region (style/amount per event)."""
+        return self._zoom_in_filter(
+            duration, style, amount, self.GAME_BASE_DELTA,
+            self._center(self.gameplay_region))
+
+    # Pull-back scale bands per amount: (start, end).
+    ZOOM_OUT_BANDS = {
+        "subtle": (0.92, 0.84),
+        "medium": (0.85, 0.75),
+        "hard":   (0.80, 0.62),
+    }
+
+    def _zoom_out_filter(self, duration: float, style: str = "push",
+                         amount: str = "medium") -> str:
+        """Blur-backed pull-back. push = eased over the segment,
+        snap = fast pull in ~0.3s then hold, cut = instant at end scale."""
         if duration <= 0:
             return "[0:v]scale=1080:1920,format=yuv420p[output]"
-
-        ramp_frames = max(1, int(duration * 60 * self.zoom_ramp_portion))
-        base, delta = 1.30, 0.25 * self.zoom_intensity
-        hold = base + delta
-        step = max(delta, 1e-6) / ramp_frames
-
-        z_expr = (
-            f"if(lt(on,{ramp_frames}),"
-            f"min({hold:.4f},if(eq(on,0),{base:.4f},pzoom+{step:.6f})),"
-            f"{hold:.4f})"
-        )
-        x_expr, y_expr = self._focus_exprs(self._center(self.gameplay_region))
-        return (
-            "[0:v]setpts=PTS-STARTPTS,"
-            f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
-            ":d=1:s=1080x1920:fps=60,"
-            "format=yuv420p[output]"
-        )
-
-    def _zoom_out_filter(self, duration: float) -> str:
-        """
-        Blur + faster pull-back.
-        Scale 0.85 → 0.75  (was 0.80 → 0.75, now starts bigger for
-        more visible snap-back).
-        """
-        if duration <= 0:
-            return "[0:v]scale=1080:1920,format=yuv420p[output]"
-
+        start, end = self.ZOOM_OUT_BANDS.get(amount, (0.85, 0.75))
         total_frames = max(1, int(duration * 60))
-        # 0.85 → 0.75 over full duration  (Δ = 0.10)
-        scale_expr = f"(0.85-(0.10*n/{total_frames}))"
+        if style == "cut":
+            scale_expr = f"{end:.4f}"
+        elif style == "snap":
+            ramp = max(1, int(0.3 * 60))
+            scale_expr = (
+                f"if(lt(n,{ramp}),"
+                f"({start:.4f}-({start - end:.4f}*n/{ramp})),{end:.4f})")
+        else:  # push — eased over the whole segment
+            scale_expr = f"({start:.4f}-({start - end:.4f}*n/{total_frames}))"
         w_expr = f"2*trunc(iw*{scale_expr}/2)"
         h_expr = f"2*trunc(ih*{scale_expr}/2)"
-
         return (
             "[0:v]setpts=PTS-STARTPTS,scale=1080:1920,split[fg_in][bg_in];"
             "[bg_in]boxblur=40:5,eq=brightness=-0.15[bg];"

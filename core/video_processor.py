@@ -745,6 +745,11 @@ class VideoProcessor:
                         "duration":   float(getattr(ev, "duration", 0.0)),
                         "reason":     getattr(ev, "reason", None),
                         "confidence": float(getattr(ev, "confidence", 0.0)),
+                        # Zoom grammar — tracked so the thinker can learn
+                        # which style/amount works per scenario.
+                        "style":        getattr(ev, "style", None),
+                        "amount":       getattr(ev, "amount", None),
+                        "style_reason": getattr(ev, "style_reason", None),
                     }
                     for ev in (decision_timeline or [])
                 ],
