@@ -584,7 +584,7 @@ class IterationOrchestrator:
         camera_region: Optional[dict] = None,
         gameplay_region: Optional[dict] = None,
         camera_mode: str = "vtuber",
-        auto_cam_detect: bool = False,
+        auto_cam_detect: bool = True,
         mic_subtitles_enabled: bool = True,
         game_subtitles_enabled: bool = True,
         end_card_enabled: bool = False,

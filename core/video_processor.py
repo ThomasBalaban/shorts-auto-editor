@@ -149,7 +149,7 @@ class VideoProcessor:
         camera_region=None,  # Optional[dict] normalized {x,y,w,h} for zoom focus
         gameplay_region=None,  # Optional[dict] normalized {x,y,w,h} for zoom focus
         camera_mode: str = "vtuber",          # "vtuber" | "facecam" | "none"
-        auto_cam_detect: bool = False,        # vision-detect regions per video
+        auto_cam_detect: bool = True,         # vision-detect regions (always on; preset is the fallback)
         mic_subtitles_enabled: bool = True,
         game_subtitles_enabled: bool = True,
         end_card_enabled: bool = False,       # experiment primitive, default off
