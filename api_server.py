@@ -34,6 +34,7 @@ _settings: Dict[str, Any] = {
     "enable_trimming": True,
     # Processing toggles / inputs (global).
     "camera_mode": "vtuber",          # "vtuber" | "facecam" | "none"
+    "auto_cam_detect": False,
     "mic_subtitles_enabled": True,
     "game_subtitles_enabled": True,
     "onomatopoeia_enabled": True,
@@ -409,6 +410,7 @@ def _processing_worker() -> None:
                     camera_region=camera_region,
                     gameplay_region=gameplay_region,
                     camera_mode=_camera_mode(),
+                    auto_cam_detect=_settings["auto_cam_detect"],
                     mic_subtitles_enabled=_settings["mic_subtitles_enabled"],
                     end_card_enabled=_settings["end_card_enabled"],
                     sparse_cuts_enabled=_settings["sparse_cuts_enabled"],
@@ -452,6 +454,7 @@ def _processing_worker() -> None:
                     camera_region=camera_region,
                     gameplay_region=gameplay_region,
                     camera_mode=_camera_mode(),
+                    auto_cam_detect=_settings["auto_cam_detect"],
                     mic_subtitles_enabled=_settings["mic_subtitles_enabled"],
                     end_card_enabled=_settings["end_card_enabled"],
                     sparse_cuts_enabled=_settings["sparse_cuts_enabled"],
@@ -529,6 +532,7 @@ class SubtitlerSettings(BaseModel):
     output_dir: str
     enable_trimming: bool
     camera_mode: str = "vtuber"
+    auto_cam_detect: bool = False
     mic_subtitles_enabled: bool = True
     game_subtitles_enabled: bool = True
     onomatopoeia_enabled: bool = True
@@ -706,6 +710,7 @@ def post_settings(s: SubtitlerSettings):
         "output_dir": s.output_dir,
         "enable_trimming": s.enable_trimming,
         "camera_mode": s.camera_mode if s.camera_mode in ("vtuber", "facecam", "none") else "vtuber",
+        "auto_cam_detect": s.auto_cam_detect,
         "mic_subtitles_enabled": s.mic_subtitles_enabled,
         "game_subtitles_enabled": s.game_subtitles_enabled,
         "onomatopoeia_enabled": s.onomatopoeia_enabled,

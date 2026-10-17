@@ -149,6 +149,7 @@ class VideoProcessor:
         camera_region=None,  # Optional[dict] normalized {x,y,w,h} for zoom focus
         gameplay_region=None,  # Optional[dict] normalized {x,y,w,h} for zoom focus
         camera_mode: str = "vtuber",          # "vtuber" | "facecam" | "none"
+        auto_cam_detect: bool = False,        # vision-detect regions per video
         mic_subtitles_enabled: bool = True,
         game_subtitles_enabled: bool = True,
         end_card_enabled: bool = False,       # experiment primitive, default off
@@ -201,6 +202,19 @@ class VideoProcessor:
                 f"{os.path.basename(input_file)}"
             )
             log_func("=" * 60)
+
+            # ── PHASE 0: Auto cam detection (opt-in) ───────────────────
+            # One Flash vision call locates the cam overlay + gameplay
+            # area, replacing the manual Layout-tab regions for this video.
+            # Low confidence / implausible boxes / failure → preset regions.
+            cam_detection = None
+            if auto_cam_detect:
+                log_func("\n--- PHASE 0: Auto Cam Detection ---")
+                from ai_director.cam_detector import detect_regions
+                cam_detection = detect_regions(input_file, log_func)
+                if cam_detection:
+                    camera_region = cam_detection["camera"]
+                    gameplay_region = cam_detection["gameplay"]
 
             # ── PHASE 1: Dialogue Transcription (source time) ──────────
             # Word timestamps come back referenced to the full source. We'll
@@ -708,6 +722,10 @@ class VideoProcessor:
             editorial_decisions = {
                 "effects_settings": dict(effects or {}),
                 "mixed_audio_mode": bool(mixed_audio_mode),
+                "cam_detection": (
+                    {**cam_detection, "source": "auto"} if cam_detection
+                    else {"source": "preset"
+                          if not auto_cam_detect else "preset_fallback"}),
                 "trim_segments_kept": [
                     [float(s), float(e)] for s, e in (final_trim_segments or [])
                 ],
