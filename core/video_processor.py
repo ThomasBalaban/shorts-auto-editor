@@ -152,7 +152,6 @@ class VideoProcessor:
         mic_subtitles_enabled: bool = True,
         game_subtitles_enabled: bool = True,
         end_card_enabled: bool = False,       # experiment primitive, default off
-        punch_freeze_enabled: bool = False,   # experiment primitive, default off
         sparse_cuts_enabled: bool = False,    # cap trim to ≤3 kept segments
         transcription_engine: str = "gemini",  # "gemini" | "whisper"
         identity=None,  # Optional[dict]: cut_id/batch_id/batch_index/batch_size
@@ -657,29 +656,6 @@ class VideoProcessor:
                     timeline=decision_timeline,
                 )
                 video_to_subtitle = edited_video_path
-
-            # ── Optional punch freeze (experiment primitive, default off) ─
-            # Duration-neutral frame hold at the punchline; audio continues,
-            # so subtitle/event timings downstream are untouched.
-            if punch_freeze_enabled:
-                from core.punch_freeze import (
-                    apply_punch_freeze, map_source_time_to_output)
-                punch_src = (last_trim_data or {}).get("punch_point_time")
-                segs_for_map = extended_trim_segments or trim_segments or []
-                punch_out = (map_source_time_to_output(
-                    float(punch_src), segs_for_map)
-                    if punch_src is not None and segs_for_map else None)
-                if punch_out is None:
-                    log_func("   🧊 Punch freeze skipped — no mappable "
-                             "punch point")
-                    render_health["punch_freeze"] = "skipped_no_punch"
-                else:
-                    applied = apply_punch_freeze(
-                        video_to_subtitle, punch_out,
-                        (effects or {}).get("fx_punch_freeze_s", 0.5),
-                        log_func)
-                    render_health["punch_freeze"] = (
-                        "applied" if applied else "failed")
 
             # ── PHASE 6: Embed Subtitles → final output ────────────────
             log_func("\n--- PHASE 6: Embedding All Subtitles ---")
